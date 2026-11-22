@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/overview.png" alt="Isthmus overview: the Windows habits switch, one click for keyboard and mouse, the Accessibility card, and the state of the keyboard tap, the mouse tap and Secure Input" width="800" />
+<img src="docs/assets/poster.png" alt="Isthmus: two systems, one pair of hands. The Isthmus logo beside the app's overview, with Windows habits on for keyboard and mouse, and its Devices page sending files to a PC over the direct cable" width="800" />
 
 <h1>Isthmus</h1>
 

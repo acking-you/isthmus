@@ -12,10 +12,8 @@ library;
 import 'dart:io';
 import 'dart:ui' as ui;
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart' show Scrollable;
-import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:isthmus_ui/src/shell/app_scope.dart';
 
@@ -24,40 +22,6 @@ import 'support.dart';
 
 final String? _dir = Platform.environment['ISTHMUS_UI_PREVIEW_DIR'];
 final String? _cjk = Platform.environment['ISTHMUS_UI_PREVIEW_CJK'];
-
-/// Loads the app's real faces, which `flutter test` otherwise draws as
-/// boxes, and both Lucide strokes.
-Future<void> _loadRealFonts() async {
-  Future<void> family(String name, List<Future<ByteData>> fonts) async {
-    final loader = FontLoader(name);
-    fonts.forEach(loader.addFont);
-    await loader.load();
-  }
-
-  await family('GoogleSansFlex', [
-    for (final weight in ['Regular', 'Medium', 'SemiBold', 'Bold'])
-      rootBundle.load('assets/fonts/GoogleSansFlex-$weight.ttf'),
-  ]);
-  await family('GeistMono', [
-    for (final weight in ['Regular', 'Medium', 'SemiBold'])
-      rootBundle.load('assets/fonts/GeistMono-$weight.ttf'),
-  ]);
-  await family('packages/lucide_icons_flutter/Lucide400', [
-    rootBundle.load(
-      'packages/lucide_icons_flutter/assets/build_font/LucideVariable-w400.ttf',
-    ),
-  ]);
-  await family('packages/lucide_icons_flutter/Lucide300', [
-    rootBundle.load(
-      'packages/lucide_icons_flutter/assets/build_font/LucideVariable-w300.ttf',
-    ),
-  ]);
-  final cjk = _cjk;
-  if (cjk != null) {
-    final bytes = File(cjk).readAsBytesSync();
-    await family('PingFang SC', [Future.value(ByteData.sublistView(bytes))]);
-  }
-}
 
 Future<void> _capture(WidgetTester tester, String name) async {
   final boundary = tester.renderObject<RenderRepaintBoundary>(
@@ -85,7 +49,7 @@ void main() {
       ) async {
         debugDisableShadows = false;
         try {
-          await tester.runAsync(_loadRealFonts);
+          await tester.runAsync(() => loadRealFonts(cjk: _cjk));
           await pumpApp(tester, busyApi(), page: page, locale: locale);
           await _capture(tester, '${page.name}-${locale.languageCode}');
           if (page == AppPage.devices) {

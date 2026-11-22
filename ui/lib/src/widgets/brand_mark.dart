@@ -67,3 +67,92 @@ class _GlyphPainter extends CustomPainter {
   @override
   bool shouldRepaint(_GlyphPainter old) => false;
 }
+
+/// The app icon's art: the brand tile with the glyph, drawn from the same
+/// geometry as [BrandMark] so the icon, the rail and the poster never drift.
+///
+/// [margin] is the share of the canvas left around the tile on each side:
+/// macOS icons sit in a transparent margin with a soft shadow (Apple's grid:
+/// an 824-point tile on a 1024-point canvas), while Windows and tray icons
+/// fill their canvas. `test/brand_render_test.dart` rasterizes it into every
+/// icon file.
+class BrandIconPainter extends CustomPainter {
+  const BrandIconPainter({this.margin = 0, this.shadow = false});
+
+  /// The empty border on each side, as a share of the canvas.
+  final double margin;
+
+  /// Whether to drop the soft shadow macOS icons carry under the tile.
+  final bool shadow;
+
+  /// The light and the dark end of the brand gradient on the icon.
+  static const Color light = Color(0xFF42A5F5);
+  static const Color dark = Color(0xFF1565C0);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final side = size.shortestSide;
+    final inset = side * margin;
+    final tile = Rect.fromLTWH(
+      inset,
+      inset,
+      side - 2 * inset,
+      side - 2 * inset,
+    );
+    final radius = Radius.circular(tile.width * 0.225);
+    final shape = RSuperellipse.fromRectAndRadius(tile, radius);
+    if (shadow) {
+      canvas.drawRSuperellipse(
+        RSuperellipse.fromRectAndRadius(
+          tile.translate(0, tile.height * 0.012),
+          radius,
+        ),
+        Paint()
+          ..color = const Color(0x40000000)
+          ..maskFilter = MaskFilter.blur(BlurStyle.normal, tile.width * 0.014),
+      );
+    }
+    canvas.drawRSuperellipse(
+      shape,
+      Paint()
+        ..shader = const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [light, Color(0xFF1E88E5), dark],
+          stops: [0, 0.5, 1],
+        ).createShader(tile),
+    );
+    // A soft light from above, as on a lit tile.
+    canvas.drawRSuperellipse(
+      shape,
+      Paint()
+        ..shader = LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.center,
+          colors: [
+            Colors.white.withValues(alpha: 0.18),
+            Colors.white.withValues(alpha: 0),
+          ],
+        ).createShader(tile),
+    );
+    final glyphSide = tile.width * 0.66;
+    final glyph = isthmusGlyph(glyphSide).shift(
+      Offset(
+        tile.left + (tile.width - glyphSide) / 2,
+        tile.top + (tile.height - glyphSide) / 2,
+      ),
+    );
+    canvas
+      ..drawPath(
+        glyph.shift(Offset(0, tile.height * 0.012)),
+        Paint()
+          ..color = const Color(0x3D0D47A1)
+          ..maskFilter = MaskFilter.blur(BlurStyle.normal, tile.width * 0.012),
+      )
+      ..drawPath(glyph, Paint()..color = Colors.white);
+  }
+
+  @override
+  bool shouldRepaint(BrandIconPainter old) =>
+      old.margin != margin || old.shadow != shadow;
+}

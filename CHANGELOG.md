@@ -3,6 +3,7 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+- Isthmus has its own icon, the isthmus glyph (two shores joined by a narrow neck) on the blue tile, in the Dock, Finder, the Windows taskbar and the Windows notification area, in place of Flutter's.
 - Holding the middle button and moving the mouse scrolls toward the pointer, faster the further it is, as Windows autoscroll does; a middle click without moving still clicks, so links still open in new tabs. It is on with the Windows preset, has a switch on the Mouse page, and leaves virtual machines and apps that drag with the middle button (Blender, Figma, CAD apps and others) alone.
 - Tapping Shift alone switches between the input method and ABC, as Shift switches Chinese and English in a Windows IME (macOS's own way is Caps Lock). It is on by default, has its own switch on the Keyboard page's input source card, follows the Windows and Mac presets, and is used only when an input method such as Pinyin or WeType is installed; a key, click or other modifier in between cancels it.
 - File sharing between computers. Isthmus finds other computers running it on the local network (mDNS), pairs with each once using a six-digit code shown on the other computer (SPAKE2 over a Noise-encrypted connection, keys pinned), reconnects to paired devices by itself, and sends the files and folders dropped on its window with one click on the new Devices page. Received files land in Downloads, under a free name.

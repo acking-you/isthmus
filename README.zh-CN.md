@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/overview.zh-CN.png" alt="Isthmus 概览：Windows 习惯总开关、键盘和鼠标一键切换、辅助功能权限卡片，以及键盘 tap、鼠标 tap 和安全输入的状态" width="800" />
+<img src="docs/assets/poster.zh-CN.png" alt="Isthmus：两套系统，一双手。Isthmus 标志旁是应用的概览页（键盘和鼠标都开启了 Windows 习惯），以及通过直连线向 PC 发送文件的设备页" width="800" />
 
 <h1>Isthmus</h1>
 

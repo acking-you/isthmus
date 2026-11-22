@@ -1,4 +1,7 @@
 import 'dart:async';
+import 'dart:io';
+
+import 'package:flutter/services.dart';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:isthmus_ui/src/app.dart';
@@ -86,4 +89,38 @@ Future<void> tapInList(
   await tester.pumpAndSettle();
   await tester.tap(finder);
   await settle(tester);
+}
+
+/// Loads the app's real faces, which `flutter test` otherwise draws as
+/// boxes, both Lucide strokes and, when [cjk] names a .ttf/.otf, a Chinese
+/// face under the name the theme falls back to.
+Future<void> loadRealFonts({String? cjk}) async {
+  Future<void> family(String name, List<Future<ByteData>> fonts) async {
+    final loader = FontLoader(name);
+    fonts.forEach(loader.addFont);
+    await loader.load();
+  }
+
+  await family('GoogleSansFlex', [
+    for (final weight in ['Regular', 'Medium', 'SemiBold', 'Bold'])
+      rootBundle.load('assets/fonts/GoogleSansFlex-$weight.ttf'),
+  ]);
+  await family('GeistMono', [
+    for (final weight in ['Regular', 'Medium', 'SemiBold'])
+      rootBundle.load('assets/fonts/GeistMono-$weight.ttf'),
+  ]);
+  await family('packages/lucide_icons_flutter/Lucide400', [
+    rootBundle.load(
+      'packages/lucide_icons_flutter/assets/build_font/LucideVariable-w400.ttf',
+    ),
+  ]);
+  await family('packages/lucide_icons_flutter/Lucide300', [
+    rootBundle.load(
+      'packages/lucide_icons_flutter/assets/build_font/LucideVariable-w300.ttf',
+    ),
+  ]);
+  if (cjk != null) {
+    final bytes = File(cjk).readAsBytesSync();
+    await family('PingFang SC', [Future.value(ByteData.sublistView(bytes))]);
+  }
 }

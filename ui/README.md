@@ -37,7 +37,11 @@ Rules the code keeps:
   window only (`windowReady` set), so widget tests never reach the plugin.
 - Icons come from `AppIcons`, never Material `Icons.*`.
 - `tool/gen_tray_icon.dart` draws `assets/tray/tray_icon*.png` from the same
-  geometry as the brand mark.
+  geometry as the brand mark. `test/brand_render_test.dart` renders the rest
+  of the brand from `BrandIconPainter` and the real pages: the macOS app
+  icon set, the Windows `.ico` files, `docs/assets/logo.png` and the README
+  posters (`ISTHMUS_RENDER_BRAND=1`, plus `ISTHMUS_UI_PREVIEW_CJK` for the
+  Chinese one).
 
 ## Checks
 
