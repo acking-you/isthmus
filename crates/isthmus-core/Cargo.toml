@@ -1,0 +1,16 @@
+[package]
+name = "isthmus-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Isthmus foundations: the data directory, atomic state files, the single-instance lock and the boot session"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+libc.workspace = true
+snafu.workspace = true

@@ -1,0 +1,14 @@
+// Application-level settings for the Runner target.
+
+// The application's name. By default this is also the title of the Flutter window.
+// Accessibility permission is granted per bundle identifier and signature, so a
+// development build ("-local") is kept apart from an installed release.
+PRODUCT_NAME = Isthmus$(ISTHMUS_LOCAL_SUFFIX)
+EXECUTABLE_NAME = Isthmus
+
+// The application's bundle identifier
+ISTHMUS_RELEASE_BUNDLE_ID = dev.acking.isthmus
+PRODUCT_BUNDLE_IDENTIFIER = $(ISTHMUS_RELEASE_BUNDLE_ID)$(ISTHMUS_LOCAL_SUFFIX)
+
+// The copyright displayed in application information
+PRODUCT_COPYRIGHT = Copyright © 2026 LB7666. All rights reserved.

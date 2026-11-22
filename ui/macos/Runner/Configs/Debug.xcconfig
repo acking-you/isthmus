@@ -1,0 +1,6 @@
+#include "../../Flutter/Flutter-Debug.xcconfig"
+#include "Warnings.xcconfig"
+
+// Link the Rust library so Swift can reach `isthmus_shutdown` at quit through
+// the same copy Dart opens. The rpath is already in LD_RUNPATH_SEARCH_PATHS.
+OTHER_LDFLAGS = $(inherited) -L$(PROJECT_DIR)/../native/macos -listhmus_ffi

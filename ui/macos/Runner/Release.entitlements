@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!-- No App Sandbox: an app that rewrites and posts input events and sets HID
+     properties cannot be sandboxed (the sandbox denies event taps that modify
+     events and synthesizing input). The app ships outside the App Store. -->
+<dict/>
+</plist>

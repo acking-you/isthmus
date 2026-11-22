@@ -1,0 +1,25 @@
+[package]
+name = "isthmus-ffi"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "The C ABI the Flutter app calls: one JSON operation export over isthmus-input"
+publish = false
+
+[lib]
+name = "isthmus_ffi"
+crate-type = ["cdylib", "staticlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+isthmus-core.workspace = true
+isthmus-input.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

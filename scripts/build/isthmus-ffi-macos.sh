@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Build the macOS FFI dynamic library and stage it for Flutter.
+# - Copies to ui/native/macos, where the Runner's build phase embeds it.
+#
+# Builds for the host architecture only: each release is built on a native
+# runner per arch, so no universal binary is needed anywhere.
+#
+# PROFILE=debug builds without optimizations for a faster development loop.
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+FFI_LIB_NAME="libisthmus_ffi.dylib"
+PROFILE="${PROFILE:-release}"
+
+cd "${ROOT_DIR}"
+
+case "$(uname -m)" in
+  arm64) HOST_TARGET="aarch64-apple-darwin" ;;
+  x86_64) HOST_TARGET="x86_64-apple-darwin" ;;
+  *) printf "Unsupported macOS arch: %s\n" "$(uname -m)" >&2; exit 1 ;;
+esac
+
+rustup target add "${HOST_TARGET}" >/dev/null
+if [[ "${PROFILE}" == "release" ]]; then
+  cargo build -p isthmus-ffi --release --target "${HOST_TARGET}"
+else
+  cargo build -p isthmus-ffi --target "${HOST_TARGET}"
+fi
+
+STAGED_LIB="${ROOT_DIR}/target/${HOST_TARGET}/${PROFILE}/${FFI_LIB_NAME}"
+
+FFI_TARGET_DIR="${ROOT_DIR}/ui/native/macos"
+mkdir -p "${FFI_TARGET_DIR}"
+cp "${STAGED_LIB}" "${FFI_TARGET_DIR}/${FFI_LIB_NAME}"
+
+# Set the install name before Xcode links the app against this library. Rust's
+# absolute build path would otherwise be recorded in the executable too.
+install_name_tool -id "@rpath/${FFI_LIB_NAME}" "${FFI_TARGET_DIR}/${FFI_LIB_NAME}"
+
+# arm64 binaries must carry a signature to run at all, so the linker ad-hoc
+# signs them; x86_64 has no such rule and comes out unsigned. Xcode then fails
+# the app's CodeSign step on the unsigned nested dylib, so sign it here to make
+# both architectures behave the same.
+codesign --force --sign - --timestamp=none "${FFI_TARGET_DIR}/${FFI_LIB_NAME}"
+
+printf "FFI ready (%s): %s\n" "$(lipo -archs "${FFI_TARGET_DIR}/${FFI_LIB_NAME}")" \
+  "${FFI_TARGET_DIR}/${FFI_LIB_NAME}"

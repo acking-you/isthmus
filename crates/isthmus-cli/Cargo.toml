@@ -1,0 +1,40 @@
+[package]
+name = "isthmus-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "The isthmus command: devices, status, a headless run, crash recovery and an event inspector"
+publish = false
+
+[[bin]]
+name = "isthmus"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+clap.workspace = true
+isthmus-core.workspace = true
+isthmus-input.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+snafu.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# SIGINT, SIGTERM and SIGHUP through a self-pipe, for `run` and `inspect`.
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+# The AppKit main loop for `run` (the frontmost-app observers live on it) and
+# its will-terminate observer, and the non-prompting Accessibility check for
+# `status`.
+[target.'cfg(target_os = "macos")'.dependencies]
+block2.workspace = true
+objc2.workspace = true
+objc2-app-kit.workspace = true
+objc2-application-services.workspace = true
+objc2-foundation.workspace = true

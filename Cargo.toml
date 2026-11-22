@@ -1,0 +1,46 @@
+[workspace]
+# Every library and the CLI live under `crates/`. The FFI cdylib stays next to
+# the Flutter code that loads it.
+members = ["crates/*", "ui/native/isthmus_ffi"]
+# Spelled out: a virtual manifest does not infer the resolver from the edition,
+# and without this it silently falls back to resolver 1.
+resolver = "3"
+
+[workspace.package]
+# `version` must stay the first key here: release tooling reads it by position.
+version = "0.1.0"
+authors = ["L_B__"]
+edition = "2024"
+rust-version = "1.100.0"
+license = "MIT"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+
+[workspace.dependencies]
+isthmus-core = { path = "crates/isthmus-core", version = "0.1.0" }
+isthmus-input = { path = "crates/isthmus-input", version = "0.1.0" }
+
+clap = { version = "4.5", features = ["derive"] }
+libc = "0.2.190"
+parking_lot = "0.12"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", default-features = false, features = ["std"] }
+snafu = "0.9.2"
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter", "fmt"] }
+
+# The macOS layer (isthmus-input's platform/macos): event taps, HID event
+# system properties, the frontmost application, permissions and login items.
+# The same objc2 family pb-mapper pins; only the headers used.
+objc2 = "0.6.5"
+block2 = "0.6.2"
+dispatch2 = { version = "0.3.1", default-features = false, features = ["std", "objc2"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSArray", "NSDictionary", "NSError", "NSNotification", "NSObject", "NSOperation", "NSString", "NSURL"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "CFArray", "CFDate", "CFDictionary", "CFMachPort", "CFNumber", "CFPreferences", "CFRunLoop", "CFString", "CFUUID"] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "objc2", "libc", "CGError", "CGEvent", "CGEventSource", "CGEventTypes", "CGRemoteOperation", "CGDirectDisplay", "CGDisplayConfiguration"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "libc", "NSRunningApplication", "NSWorkspace", "NSApplication", "NSResponder"] }
+objc2-application-services = { version = "0.3.2", default-features = false, features = ["std", "libc", "HIServices", "AXUIElement"] }
+objc2-io-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "hid", "hidsystem", "pwr_mgt"] }
+objc2-service-management = { version = "0.3.2", default-features = false, features = ["std", "objc2", "objc2-foundation", "SMAppService"] }

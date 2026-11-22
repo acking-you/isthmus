@@ -1,0 +1,91 @@
+name: isthmus_ui
+description: "Isthmus: Windows keyboard and mouse habits on a Mac"
+# The app is shipped as a signed .app, never as a pub package.
+publish_to: 'none'
+
+# The build-name matches Cargo.toml's workspace version. The build-number is an
+# independent, increasing package counter: rebuilds also consume a number, and
+# the next release must use a greater one.
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.14.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # Material widgets. Flutter 3.47+ moved them out of the SDK; importing
+  # package:flutter/material.dart is deprecated.
+  material_ui: ^1.1.0
+  # The generated AppLocalizations delegates (English and Chinese).
+  flutter_localizations:
+    sdk: flutter
+  # Cupertino's own Chinese strings: material_ui's widgets read cupertino_ui's
+  # CupertinoLocalizations, which the generated delegate list does not cover.
+  cupertino_ui: ^1.0.0
+  # Plurals and placeholders in the generated strings.
+  intl: any
+  # Native strings for the one JSON call into libisthmus_ffi.
+  ffi: ^2.1.0
+  # The app's one icon family (Lucide, ISC), mapped in lib/src/theme/app_icons.dart.
+  # Pinned exactly so a glyph redraw is a choice, as in POCOX.
+  lucide_icons_flutter: 3.1.25
+  # The window: hidden at launch (MainFlutterWindow.swift calls its
+  # hiddenWindowAtLaunch), a hidden title bar, closing to the menu bar, and the
+  # Dock icon only while the window shows. 0.5.x is pb-mapper's line; 0.7 is a
+  # rewrite on native assets.
+  window_manager: ^0.5.1
+  # The menu bar item: a template icon and its menu.
+  tray_manager: ^0.5.1
+  # The first-run flag and the language choice.
+  shared_preferences: ^2.2.2
+  # One stacking toast for every outcome.
+  toastification: ^3.2.0
+  # The app's own version in Settings › About.
+  package_info_plus: ^10.2.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  # The recommended lint set, activated in analysis_options.yaml.
+  flutter_lints: ^6.0.0
+
+flutter:
+  # Generate AppLocalizations from lib/l10n/*.arb (see l10n.yaml).
+  generate: true
+
+  # Material widgets stay; their icon font is never drawn (CI greps for
+  # `Icons.`): every glyph comes from AppIcons.
+  uses-material-design: true
+
+  assets:
+    # The menu bar icon, black plus alpha, read by tray_manager.
+    - assets/tray/
+    # The OFL requires its notice to travel with the font, so the texts are
+    # bundled and registered in main.dart rather than only living in the repo.
+    - assets/fonts/OFL-GoogleSansFlex.txt
+    - assets/fonts/OFL-GeistMono.txt
+
+  fonts:
+    # The design system's faces, after POCOX (SIL OFL): Google Sans Flex for
+    # prose and Geist Mono for keys. Latin only; Chinese falls back to PingFang
+    # SC, which macOS ships in every weight. Static instances, since Flutter
+    # maps fontWeight to the nearest declared weight and never onto a wght axis.
+    - family: GoogleSansFlex
+      fonts:
+        - asset: assets/fonts/GoogleSansFlex-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/GoogleSansFlex-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/GoogleSansFlex-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/GoogleSansFlex-Bold.ttf
+          weight: 700
+    - family: GeistMono
+      fonts:
+        - asset: assets/fonts/GeistMono-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/GeistMono-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/GeistMono-SemiBold.ttf
+          weight: 600
