@@ -3,6 +3,8 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+
+## [0.1.1] - 2026-11-22
 - On Windows, file sharing starts and keep-awake can be switched on. In 0.1.0 every state file failed to save there just after it was written (the folder was opened as a file to flush it, which Windows refuses), so file sharing stopped at its first file and said "could not save the file sharing state".
 - A file that cannot be read or written now says which file and why, down to the system's own words, wherever the app shows the failure.
 

@@ -422,7 +422,7 @@ checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 
 [[package]]
 name = "isthmus-awake"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "isthmus-core",
  "objc2-core-foundation",
@@ -437,7 +437,7 @@ dependencies = [
 
 [[package]]
 name = "isthmus-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "block2",
  "clap",
@@ -457,7 +457,7 @@ dependencies = [
 
 [[package]]
 name = "isthmus-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libc",
  "snafu",
@@ -465,7 +465,7 @@ dependencies = [
 
 [[package]]
 name = "isthmus-ffi"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -482,7 +482,7 @@ dependencies = [
 
 [[package]]
 name = "isthmus-input"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "block2",
  "dispatch2",
@@ -505,7 +505,7 @@ dependencies = [
 
 [[package]]
 name = "isthmus-link"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "getrandom 0.3.4",
  "hmac",
