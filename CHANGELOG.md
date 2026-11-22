@@ -3,6 +3,10 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+- Pairing is one click on the other computer: both show the same six digits and the other computer's user clicks Accept, with nothing to type. The digits come from the encrypted connection and from random values each side commits to before seeing the other's, so a machine in the middle cannot make them match; comparing them before accepting is what catches one. A computer still on 0.1 pairs by code as before.
+- The clipboard is shared with paired devices: copy text on one computer, paste it on the other, both ways, with a notice each time (a toast with the window in front, a system notification otherwise). A switch on the Devices page turns it off; what a password manager copies stays put. On a Mac that asks before apps read the clipboard (macOS 15.4 and later), the Devices page says how to allow it.
+- A transfer whose path dies resumes within seconds instead of waiting minutes for TCP to give up: a write that moves nothing for 10 seconds ends the attempt, the other paths are tried first, retries start after a quarter second and keep going for 2 minutes after bytes last moved, and the receiver waits for the sender meanwhile. A retrying transfer says which retry it is, what went wrong on which path and interface, and the system's own words, and its bar keeps the real progress.
+- On Windows the window has its own title bar in the app's surface, with Windows' minimize, maximize and close buttons, and Chinese text uses a bundled Noto Sans SC, whose medium and semibold weights Microsoft YaHei lacks, behind Segoe UI.
 
 ## [0.1.1] - 2026-11-22
 - On Windows, file sharing starts and keep-awake can be switched on. In 0.1.0 every state file failed to save there just after it was written (the folder was opened as a file to flush it, which Windows refuses), so file sharing stopped at its first file and said "could not save the file sharing state".

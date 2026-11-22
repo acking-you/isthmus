@@ -64,15 +64,20 @@ void main() {
     await finish(tester);
   });
 
-  testWidgets('a nearby device pairs with the code typed here', (tester) async {
+  testWidgets('a version 1 device pairs with the code typed here', (
+    tester,
+  ) async {
     final api = FakeIsthmusApi(
       link: linkJson(
         peers: [peerJson(_laptop, 'Laptop', paired: false, os: 'macos')],
       ),
     );
     await pumpApp(tester, api, page: AppPage.devices);
-    await tester.tap(find.byKey(const Key('peer-pair-$_laptop')));
-    await settle(tester);
+    await tapInList(
+      tester,
+      find.byKey(const Key('peer-pair-$_laptop')),
+      list: 'devices-list',
+    );
     expect(api.calls, contains('link_pair $_laptop'));
 
     api.link = linkJson(
@@ -118,6 +123,119 @@ void main() {
     await tester.tap(find.byKey(const Key('pairing-cancel')));
     await settle(tester);
     expect(api.calls, contains('link_pair_cancel'));
+    await finish(tester);
+  });
+
+  testWidgets('a request from a current device is one click to accept', (
+    tester,
+  ) async {
+    final api = FakeIsthmusApi(
+      link: linkJson(
+        pairing: {
+          'role': 'incoming',
+          'peerId': _pc,
+          'peerName': 'Desk PC',
+          'peerOs': 'windows',
+          'code': '482913',
+          'stage': 'confirm',
+        },
+      ),
+    );
+    await pumpApp(tester, api, page: AppPage.devices);
+    expect(find.text('Desk PC wants to pair'), findsOneWidget);
+    expect(find.text('482 913'), findsOneWidget, reason: 'shown to compare');
+    expect(find.byKey(const Key('pairing-code-field')), findsNothing);
+    await tester.tap(find.byKey(const Key('pairing-accept')));
+    await settle(tester);
+    expect(api.calls, contains('link_pair_accept'));
+    await finish(tester);
+  });
+
+  testWidgets('the asking device shows the same code and waits', (
+    tester,
+  ) async {
+    final api = FakeIsthmusApi(
+      link: linkJson(
+        pairing: {
+          'role': 'outgoing',
+          'peerId': _pc,
+          'peerName': 'Desk PC',
+          'peerOs': 'windows',
+          'code': '482913',
+          'stage': 'confirm',
+        },
+      ),
+    );
+    await pumpApp(tester, api, page: AppPage.devices);
+    expect(find.text('Accept on Desk PC'), findsOneWidget);
+    expect(find.text('482 913'), findsOneWidget);
+    expect(find.byKey(const Key('pairing-accept')), findsNothing);
+    expect(find.byKey(const Key('pairing-code-field')), findsNothing);
+    await finish(tester);
+  });
+
+  testWidgets('a retrying transfer says why, where, and in the system words', (
+    tester,
+  ) async {
+    final api = FakeIsthmusApi(
+      link: linkJson(
+        peers: [peerJson(_pc, 'Desk PC')],
+        transfers: [
+          transferJson(
+            't1',
+            state: 'retrying',
+            retry: {
+              'attempt': 2,
+              'reason': 'stalled',
+              'path': 'lan',
+              'interface': 'en1',
+              'detail': 'nothing moved for 10 s',
+            },
+          ),
+        ],
+      ),
+    );
+    await pumpApp(tester, api, page: AppPage.devices);
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('transfer-detail-t1')),
+      200,
+      scrollable: find
+          .descendant(
+            of: find.byKey(const Key('devices-list')),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    expect(
+      find.textContaining('Retry 2: Local network en1 went quiet'),
+      findsOneWidget,
+    );
+    expect(find.text('nothing moved for 10 s'), findsOneWidget);
+    await finish(tester);
+  });
+
+  testWidgets('the clipboard switch turns sharing off', (tester) async {
+    final api = FakeIsthmusApi();
+    await pumpApp(tester, api, page: AppPage.devices);
+    await tapInList(
+      tester,
+      find.byKey(const Key('clipboard-switch')),
+      list: 'devices-list',
+    );
+    expect(api.calls, contains('link_clipboard_set false'));
+    await finish(tester);
+  });
+
+  testWidgets('a Mac that asks before reading offers Allow', (tester) async {
+    final api = FakeIsthmusApi(link: linkJson(clipboardAccess: 'ask'));
+    await pumpApp(tester, api, page: AppPage.devices);
+    await tapInList(
+      tester,
+      find.byKey(const Key('clipboard-allow')),
+      list: 'devices-list',
+    );
+    expect(find.byKey(const Key('clipboard-access-note')), findsOneWidget);
+    expect(api.calls, contains('clipboard_request_access'));
     await finish(tester);
   });
 
@@ -267,6 +385,37 @@ void main() {
       };
       await store.refresh();
       expect(asked, 1);
+      store.dispose();
+    });
+
+    /// Each copy that crosses is announced once, by its serial, not on
+    /// every read after it.
+    test('announces each copy that crosses once', () async {
+      final api = FakeIsthmusApi();
+      final store = LinkStore(api: api);
+      final copies = <String>[];
+      store.onClipboard = (event) => copies.add(event.preview);
+      await store.refresh();
+      Map<String, Object?> copy(int serial, String preview) => {
+        'enabled': true,
+        'last': {
+          'serial': serial,
+          'direction': 'receive',
+          'peers': ['Desk PC'],
+          'chars': 5,
+          'preview': preview,
+        },
+      };
+      api.link = linkJson(clipboard: copy(1, 'hello'));
+      await store.refresh();
+      api.link = {
+        ...linkJson(clipboard: copy(1, 'hello')),
+        'transfers': [transferJson('t')],
+      };
+      await store.refresh();
+      api.link = linkJson(clipboard: copy(2, 'world'));
+      await store.refresh();
+      expect(copies, ['hello', 'world']);
       store.dispose();
     });
 

@@ -43,6 +43,7 @@ isthmus/
 │   │   │   └── platform/      # computer name, Downloads, reveal, socket pinning (macOS, Windows)
 │   │   └── examples/peer.rs   # a second device in a terminal
 │   ├── isthmus-awake/         # keeping the computer awake while the screen sleeps (awake.json, one power request)
+│   ├── isthmus-clipboard/     # the system clipboard: a change-counter watcher, reading and writing text
 │   └── isthmus-cli/           # the `isthmus` command: devices, status, settings, preset, run, restore, inspect
 ├── ui/                        # the Flutter app
 │   ├── native/isthmus_ffi/    # the C ABI the app calls
@@ -61,7 +62,8 @@ isthmus-cli ───► isthmus-input ─┐
                                 ├─► isthmus-core
 isthmus-ffi ─┬─► isthmus-input ─┤
              ├─► isthmus-link ──┤
-             └─► isthmus-awake ─┘
+             ├─► isthmus-awake ─┘
+             └─► isthmus-clipboard   (the FFI joins it to the link)
 ```
 
 Later features (display alignment, keyboard and mouse across devices)
@@ -78,6 +80,7 @@ same FFI export ([roadmap.md](roadmap.md)).
 | Worker (`isthmus-actions`) | blocking side effects: opening apps and Finder windows | a bounded channel |
 | Link runtime (`isthmus-link`, two tokio workers) | the listeners, the connector, sessions, pairings, transfers | `LinkService`'s state under one mutex, never held across an `.await`; a change sink |
 | Discovery (`isthmus-discovery`, plus mdns-sd's own) | the mDNS browse and its 30-second refresh | an unbounded channel into the link runtime |
+| Clipboard (`isthmus-clipboard`) | four looks a second at the clipboard's change counter, and reading what changed | `LinkService::share_clipboard`, which queues the text on each session; text from a session comes back through the watcher's `put` |
 
 The tap callback does no Objective-C, AX, file or lock-holding work; it
 reads the snapshot, runs the engine and posts what the engine asks for.
@@ -128,16 +131,19 @@ client interface, its implementation and the test fake.
 | `login_item_get` | – | `{"state": LoginItem}` |
 | `login_item_set` | `enabled` | `{"state": LoginItem}` |
 | `shutdown` | – | message |
-| `link_status` | – | `LinkStatus` |
-| `link_pair` | `peerId` | message (the other device shows a code) |
-| `link_pair_code` | `code` | message |
+| `link_status` | – | `LinkStatus`, with `clipboardAccess` (`supported`, `access`: `allowed`/`ask`/`denied`, `blocked`) |
+| `link_pair` | `peerId` | message (both devices show a code; the other accepts) |
+| `link_pair_code` | `code` | message (pairing with a version 1 device) |
+| `link_pair_accept` | – | message (accepts the pairing another device asked for) |
 | `link_pair_cancel` | – | message (cancels, or closes a finished pairing) |
 | `link_unpair` | `peerId` | message |
 | `link_send` | `peerId`, `paths` | `{"id": transfer id}` |
 | `link_transfer_cancel` | `id` | message |
 | `link_transfers_clear` | – | message (finished transfers dropped) |
-| `link_rename` | `name` | `LinkStatus` |
+| `link_rename` | `name` | `LinkStatus`, as `link_status` |
 | `link_reveal` | `id`? | message (the transfer's files, or the receive folder, in Finder or Explorer) |
+| `link_clipboard_set` | `enabled` | `LinkStatus` (sharing the clipboard with paired devices on or off) |
+| `clipboard_request_access` | – | message (raises macOS's "Paste from Other Apps" prompt once) |
 | `awake_status` | – | `AwakeStatus` (`enabled`, `active`, `supported`, `error`?) |
 | `awake_set` | `enabled` | `AwakeStatus` |
 | `update_verify` | `message`, `signature`, `publicKey` (base64) | `{"valid": bool}` (Ed25519, strict; needs no running service) |

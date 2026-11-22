@@ -16,6 +16,7 @@ void _registerFontLicenses() {
   for (final (families, file) in [
     (['GoogleSansFlex'], 'assets/fonts/OFL-GoogleSansFlex.txt'),
     (['GeistMono'], 'assets/fonts/OFL-GeistMono.txt'),
+    (['NotoSansSC'], 'assets/fonts/OFL-NotoSansSC.txt'),
   ]) {
     LicenseRegistry.addLicense(() async* {
       yield LicenseEntryWithLineBreaks(
@@ -30,11 +31,11 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   _registerFontLicenses();
   await windowManager.ensureInitialized();
-  // On a Mac the native title bar is hidden so the app draws one continuous
-  // surface; the traffic lights stay in the rail's corner. The window starts
-  // hidden (MainFlutterWindow.swift) and is configured here without being
-  // shown: the app decides whether a launch needs it. Windows keeps its own
-  // title bar, whose buttons a hidden one would take away.
+  // The native title bar is hidden so the app draws one continuous surface:
+  // a Mac keeps its traffic lights in the rail's corner, and Windows gets
+  // its caption buttons drawn by the app (window_chrome.dart). On a Mac the
+  // window starts hidden (MainFlutterWindow.swift) and is configured here
+  // without being shown: the app decides whether a launch needs it.
   final windowReady = windowManager.waitUntilReadyToShow(
     WindowOptions(
       size: const Size(980, 680),
@@ -42,7 +43,7 @@ Future<void> main() async {
       center: true,
       backgroundColor: Colors.transparent,
       title: 'Isthmus',
-      titleBarStyle: Platform.isMacOS
+      titleBarStyle: Platform.isMacOS || Platform.isWindows
           ? TitleBarStyle.hidden
           : TitleBarStyle.normal,
       windowButtonVisibility: true,

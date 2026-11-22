@@ -122,6 +122,11 @@ Future<void> loadRealFonts({String? cjk}) async {
       'packages/lucide_icons_flutter/assets/build_font/LucideVariable-w300.ttf',
     ),
   ]);
+  // Windows' Chinese face, bundled (fonts.dart puts it first there).
+  await family('NotoSansSC', [
+    for (final weight in ['Regular', 'Medium', 'SemiBold', 'Bold'])
+      rootBundle.load('assets/fonts/NotoSansSC-$weight.subset.ttf'),
+  ]);
   if (cjk != null) {
     final bytes = File(cjk).readAsBytesSync();
     await family('PingFang SC', [Future.value(ByteData.sublistView(bytes))]);

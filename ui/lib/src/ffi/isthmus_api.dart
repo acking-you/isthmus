@@ -113,7 +113,10 @@ abstract interface class IsthmusApiClient {
   /// `link_pair_code`: the code read off the other device.
   Future<void> linkPairCode(String code);
 
-  /// `link_pair_cancel`: cancels or dismisses the pairing shown.
+  /// `link_pair_accept`: accepts the pairing another device asked for.
+  Future<void> linkPairAccept();
+
+  /// `link_pair_cancel`: cancels, declines or dismisses the pairing shown.
   Future<void> linkPairCancel();
 
   /// `link_unpair`.
@@ -134,6 +137,13 @@ abstract interface class IsthmusApiClient {
   /// `link_reveal`: shows a received transfer, or without [id] the receive
   /// folder, in the file manager.
   Future<void> linkReveal([String? id]);
+
+  /// `link_clipboard_set`: shares the clipboard with paired devices, or
+  /// stops.
+  Future<LinkStatus> linkClipboardSet(bool enabled);
+
+  /// `clipboard_request_access`: raises macOS's clipboard prompt once.
+  Future<void> clipboardRequestAccess();
 
   /// `awake_status`: keeping the computer awake, chosen and in effect.
   Future<AwakeStatus> awakeStatus();
@@ -271,6 +281,9 @@ class IsthmusApi implements IsthmusApiClient {
       _call('link_pair_code', {'code': code});
 
   @override
+  Future<void> linkPairAccept() => _call('link_pair_accept');
+
+  @override
   Future<void> linkPairCancel() => _call('link_pair_cancel');
 
   @override
@@ -299,6 +312,15 @@ class IsthmusApi implements IsthmusApiClient {
 
   @override
   Future<void> linkReveal([String? id]) => _call('link_reveal', {'id': ?id});
+
+  @override
+  Future<LinkStatus> linkClipboardSet(bool enabled) async =>
+      LinkStatus.fromJson(
+        _object(await _call('link_clipboard_set', {'enabled': enabled})),
+      );
+
+  @override
+  Future<void> clipboardRequestAccess() => _call('clipboard_request_access');
 
   @override
   Future<AwakeStatus> awakeStatus() async =>

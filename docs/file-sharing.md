@@ -1,8 +1,8 @@
 # File sharing
 
 Isthmus finds the other computers running it, pairs with each one once
-using a six-digit code, connects to it by itself from then on, and sends it
-whatever you drop on the window. A Mac and a PC work alike: the PC runs the
+with a click on the other computer, connects to it by itself from then on,
+sends it whatever you drop on the window, and shares the clipboard with it. A Mac and a PC work alike: the PC runs the
 Windows build of the same app. The code is in `crates/isthmus-link`; the
 rules every change keeps are in [AGENTS.md](../AGENTS.md).
 
@@ -10,9 +10,11 @@ rules every change keeps are in [AGENTS.md](../AGENTS.md).
 
 1. Open Isthmus on both computers. Each one lists the other under
    **Devices › Nearby** within a few seconds.
-2. Click **Pair** beside the other computer. Its window comes up showing a
-   six-digit code; type that code on the computer you clicked on. With a
-   KVM switch: click Pair, switch over, read the code, switch back, type it.
+2. Click **Pair** beside the other computer. Its window comes up asking
+   whether to pair, and both computers show the same six digits; click
+   **Accept** there. With a KVM switch: click Pair, switch over, check the
+   digits match, accept. (A computer still on Isthmus 0.1 shows a code to
+   type instead.)
 3. From then on the two connect by themselves whenever both are running;
    a paired device shows **Connected** and the path it uses.
 4. Drag files or folders anywhere onto the window. They wait under
@@ -21,6 +23,18 @@ rules every change keeps are in [AGENTS.md](../AGENTS.md).
    (`name (1).ext` when the name is taken). **Show in Finder** (**Show in
    Explorer** on a PC) opens them; the folder button at the top opens the
    folder.
+
+Copy text on one computer and paste it on the other: the clipboard is
+shared with every paired device that is connected, both ways, and each copy
+that crosses says so (a toast with the window in front, a system
+notification while Isthmus waits in the menu bar or the notification area).
+**Share the clipboard** on the Devices page turns it off. Text only, up to
+4 MB; what a password manager copies (marked concealed or transient) stays
+on its computer. A Mac running macOS 15.4 or later asks before an app reads
+the clipboard by itself: click **Allow** on the Devices page, allow
+pasting, then set Isthmus to **Always Allow** in System Settings › Privacy
+& Security › Paste from Other Apps. Until then copies from that Mac stay
+there, and copies from other devices still arrive.
 
 Unpair from a device's menu. Both sides forget the pairing; a device that
 was off when you unpaired it is refused when it comes back and forgets its
@@ -49,10 +63,19 @@ the **local network**.
   unplugged, the network takes over after the quarter second.
 - **Moving to the cable.** A session on the network checks for the cable
   every 15 seconds and moves to it as soon as it answers.
-- **Losing a path mid-transfer.** A transfer whose connection drops is
-  tried again over the best path left, up to six times, and carries on
-  from the bytes the receiver already has: pull the cable mid-file and the
-  rest comes over Wi-Fi.
+- **Losing a path mid-transfer.** A path that dies says nothing: Wi-Fi
+  drops or the cable is pulled and TCP retransmits for minutes before the
+  system calls the connection broken. So the sender does not wait for that:
+  a write that moves nothing for 10 seconds ends the attempt, and the next
+  one tries the other paths first. Retries start a quarter second later,
+  back off to at most 3 seconds, and go on for 2 minutes after bytes last
+  moved; each carries on from the bytes the receiver already has, so pull
+  the cable mid-file and the rest comes over Wi-Fi within seconds. The
+  receiver waits for the sender to come back meanwhile.
+- **Saying why.** A retrying transfer shows which retry it is, what went
+  wrong and where ("Local network en1 went quiet", "the connection on
+  Direct cable en8 broke"), with the system's own words beneath; a failed
+  one keeps its last reason.
 
 The Devices page shows each path of this computer (cable or network,
 interface, address), the path each connected device uses, and the path each
@@ -67,12 +90,20 @@ transfer took.
   id answers and what the device calls itself; that grants nothing. Only a
   key pinned by pairing makes a device a peer, and every later connection
   must prove that key, both ways.
-- **The code.** Pairing runs SPAKE2 on the six digits shown on the device
-  being added, then confirms the key with an HMAC over the Noise handshake
-  hash, which covers both keys. Someone listening learns nothing to test
-  codes against; someone in the middle gets one guess per attempt, and each
-  attempt shows a new code and pops the window up on the device asked. A
-  wrong code pins nothing on either side.
+- **Pairing.** Between two current versions, the device being added
+  commits to a random nonce (sends its SHA-256), the other sends its own
+  nonce, the first reveals its nonce, and both show six digits derived from
+  the Noise handshake hash (which covers both keys) and the two nonces. A
+  machine in the middle runs two handshakes and must fix its nonce on each
+  side before it learns the honest side's, so the digits match by chance
+  alone, one in a million: comparing them before accepting is what catches
+  it, as with Bluetooth's numeric comparison. Accepting without looking
+  trusts the network once. With a version 1 device, pairing runs SPAKE2 on
+  a six-digit code typed by the user, which a man in the middle gets one
+  guess at per attempt. A declined or failed pairing pins nothing on either
+  side.
+- **The clipboard** travels only to paired devices, over the same
+  encrypted sessions, and only while sharing is on at both ends.
 - **What arrives.** Only paired devices can send; files from them are taken
   without asking. Every path in an offer is rebuilt name by name under a
   staging folder: `..`, absolute paths and empty names are refused, and
@@ -105,7 +136,7 @@ written atomically.
 
 | File | Holds |
 | --- | --- |
-| `link.json` | the device name (`name`, the computer's name when unset) and the receive folder (`receiveDir`, Downloads when unset) |
+| `link.json` | the device name (`name`, the computer's name when unset), the receive folder (`receiveDir`, Downloads when unset), and whether the clipboard is shared (`clipboard`, on when unset) |
 | `peers.json` | each paired device: its id, pinned key, name, system and the addresses it was last reached at |
 | `link-identity.json` | this device's key pair, readable by the user alone; deleting it unpairs every device |
 | `link.lock` | one process per computer announces this device; a second copy of the app says another Isthmus is sharing |
@@ -120,6 +151,7 @@ receive folder; one untouched for three days is removed at the next start.
   reconnects from the address it was last reached at.
 - Paired devices send without asking; there is no accept prompt per
   transfer.
+- The clipboard shares text, not images or files (send files with Send).
 - Each frame is authenticated in transit; there is no hash of a whole file.
   A file whose length changes while it is sent fails the transfer.
 - The Windows app has the Devices and Settings pages: the keyboard and
@@ -133,8 +165,10 @@ A second device can run in a terminal:
 cargo run -p isthmus-link --example peer -- "Test peer"
 ```
 
-It announces itself like the app, prints the code when asked to pair, and
-takes `list`, `pair <n>`, `code <digits>`, `send <n> <path>…` on stdin. Run
+It announces itself like the app, prints the digits both devices show when
+asked to pair, and takes `list`, `pair <n>`, `accept`, `code <digits>` (a
+version 1 device), `send <n> <path>…` on stdin; clipboard text from a
+paired device is printed. Run
 it from Terminal or iTerm, which have their own Local Network permission.
 
 ## The protocol
@@ -148,8 +182,17 @@ For contributors; `crates/isthmus-link/src/wire.rs` is the reference.
   its payload. A value larger than a frame (an offer's file list) is sent as
   a `blob` message and data frames.
 - The dialler's first message is `hello` with a purpose: `session` (the
-  long-lived connection between paired devices: ping, rename, unpair),
-  `pair`, or `transfer`. The answerer replies `welcome` or `refused`.
+  long-lived connection between paired devices: ping, rename, unpair, the
+  clipboard), `pair`, or `transfer`, and its protocol version. The answerer
+  replies `welcome`, with its own, or `refused`.
+- A pairing between two version 2 devices: `pairCommit` (the answerer's
+  SHA-256 of its nonce), `pairNonce` (the dialler's), `pairReveal` (the
+  answerer's nonce); both show the digits; the answerer's acceptance is
+  `pairResult` true, acknowledged by the dialler's `pairResult` true. With a
+  version 1 dialler: `pairCodeShown`, `pairSpake` each way, `pairConfirm`
+  each way, `pairResult`.
+- The clipboard, on a session with a version 2 device: `clipboard` and the
+  text as a blob (`{"text": …}`); a version 1 device is never sent one.
 - A transfer: `offer` (id, counts) and the entries as a blob; `accept` and
   the bytes held per entry as a blob; then per file `fileStart` and its data
   from that offset; `done`; `finished`. Either side may `cancel`.

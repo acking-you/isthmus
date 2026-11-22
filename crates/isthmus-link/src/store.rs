@@ -44,9 +44,20 @@ pub struct LinkSettings {
     /// Where received files go; the Downloads folder when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receive_dir: Option<PathBuf>,
+    /// Whether to share the clipboard with paired devices; on when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clipboard: Option<bool>,
     /// Keys a later version wrote, kept on rewrite.
     #[serde(flatten)]
     pub unknown: Map<String, Value>,
+}
+
+impl LinkSettings {
+    /// Whether the clipboard is shared with paired devices: on unless
+    /// turned off.
+    pub fn shares_clipboard(&self) -> bool {
+        self.clipboard.unwrap_or(true)
+    }
 }
 
 /// The operating system a device runs, as it says in its announcement.

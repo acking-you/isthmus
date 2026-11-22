@@ -22,6 +22,7 @@ enum StoreAction {
   linkTransfer,
   linkRename,
   linkReveal,
+  linkClipboard,
 }
 
 /// One settings change waiting its turn: how it looks right away, and how it

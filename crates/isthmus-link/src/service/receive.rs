@@ -3,10 +3,11 @@
 //! everything into place once all of it is complete.
 //!
 //! A receiver keeps its staging folder when the connection drops, so the
-//! sender's retry (over another path, perhaps) continues from there. A
-//! retry may arrive before this side noticed the drop; the newer
-//! connection takes the transfer over and the older one stops at its next
-//! frame. An offer for a transfer this side already finished is answered
+//! sender's retry (over another path, perhaps) continues from there; until
+//! then the transfer shows as waiting for the sender, with the reason, and
+//! fails only once the sender would have given up. A retry may arrive
+//! before this side noticed the drop; the newer connection takes the
+//! transfer over and the older one stops at its next frame. An offer for a transfer this side already finished is answered
 //! with "all here", so a sender that missed the last reply does not make a
 //! second copy.
 
@@ -23,14 +24,19 @@ use super::{Core, Outcome, Transfer};
 use crate::files::{self, Entry, MAX_ENTRIES};
 use crate::identity::DeviceId;
 use crate::path::PathKind;
-use crate::status::{Direction, TransferFailure, TransferState};
+use crate::status::{Direction, RetryReason, RetryView, TransferFailure, TransferState};
 use crate::wire::{Frame, MAX_BLOB, Message, Refusal};
 
 /// How long the sender may take to send its offer.
 const OFFER_WAIT: Duration = Duration::from_secs(30);
 
-/// How long a transfer may go without a frame.
-const IDLE: Duration = Duration::from_secs(60);
+/// How long a transfer may go without a frame: twice the sender's own
+/// stall limit, so the sender gives up on a dead path first.
+const IDLE: Duration = Duration::from_secs(20);
+
+/// How long a receive waits for its sender to come back: as long as the
+/// sender keeps trying, and a little more.
+const RESUME_WAIT: Duration = Duration::from_secs(135);
 
 /// How much is buffered before a write to disk.
 const WRITE_BUFFER: usize = 1024 * 1024;
@@ -62,6 +68,7 @@ pub(super) async fn run(
     mut writer: Writer,
     peer: DeviceId,
     kind: PathKind,
+    interface: Option<String>,
 ) {
     let (id, files, total) = match reader.message_within(OFFER_WAIT).await {
         Ok(Message::Offer { id, files, total }) => (id, files, total),
@@ -109,7 +116,15 @@ pub(super) async fn run(
         .map(|(entry, offset)| (*offset).min(entry.size))
         .sum();
     let name = files::summary_name(&plan.entries);
-    let receiving = core.begin_receive(&id, &peer, name, files, total, already, kind);
+    let receiving = core.begin_receive(
+        &id,
+        &peer,
+        name,
+        files,
+        total,
+        already,
+        (kind, interface.clone()),
+    );
     let (done, attempt, mine, mut cancel) = receiving;
     if writer.send(&Message::Accept).await.is_err() || writer.send_blob(&offsets).await.is_err() {
         core.finish_transfer(&id, Outcome::Failed(TransferFailure::Lost), None);
@@ -138,11 +153,32 @@ pub(super) async fn run(
         }
         let frame = match frame {
             Ok(Ok(frame)) => frame,
-            Ok(Err(_)) | Err(_) => {
+            Ok(Err(error)) => {
                 if let Some(current) = current.take() {
                     let _ = close(current).await;
                 }
-                core.finish_transfer(&id, Outcome::Failed(TransferFailure::Lost), None);
+                let problem = RetryView {
+                    attempt: 0,
+                    reason: RetryReason::Lost,
+                    path: Some(kind),
+                    interface: interface.clone(),
+                    detail: Some(error.to_string()),
+                };
+                core.await_resume(&id, mine, problem);
+                return;
+            }
+            Err(_) => {
+                if let Some(current) = current.take() {
+                    let _ = close(current).await;
+                }
+                let problem = RetryView {
+                    attempt: 0,
+                    reason: RetryReason::Stalled,
+                    path: Some(kind),
+                    interface: interface.clone(),
+                    detail: Some(format!("nothing arrived for {} s", IDLE.as_secs())),
+                };
+                core.await_resume(&id, mine, problem);
                 return;
             }
         };
@@ -383,6 +419,34 @@ impl Plan {
 }
 
 impl Core {
+    /// Receive `id`'s connection `attempt` broke: show it waiting for the
+    /// sender with `problem`, and fail it as lost if no newer connection
+    /// has taken it over within [`RESUME_WAIT`].
+    fn await_resume(self: &Arc<Self>, id: &str, attempt: u64, mut problem: RetryView) {
+        problem.attempt = u32::try_from(attempt).unwrap_or(u32::MAX);
+        self.update_transfer(id, |transfer| {
+            if transfer.attempt.load(Ordering::Relaxed) == attempt {
+                transfer.state = TransferState::Retrying;
+                transfer.speed = 0;
+                transfer.retry = Some(problem);
+            }
+        });
+        let core = self.clone();
+        let id = id.to_owned();
+        self.handle.spawn(async move {
+            tokio::time::sleep(RESUME_WAIT).await;
+            let still_waiting = core.state.lock().transfers.iter().any(|transfer| {
+                transfer.id == id
+                    && transfer.direction == Direction::Receive
+                    && transfer.state == TransferState::Retrying
+                    && transfer.attempt.load(Ordering::Relaxed) == attempt
+            });
+            if still_waiting {
+                core.finish_transfer(&id, Outcome::Failed(TransferFailure::Lost), None);
+            }
+        });
+    }
+
     fn prior_receive(&self, id: &str, peer: &DeviceId) -> Prior {
         let state = self.state.lock();
         let known = state.transfers.iter().find(|transfer| {
@@ -414,7 +478,7 @@ impl Core {
         files: u32,
         total: u64,
         already: u64,
-        kind: PathKind,
+        (kind, interface): (PathKind, Option<String>),
     ) -> (
         Arc<AtomicU64>,
         Arc<AtomicU64>,
@@ -426,7 +490,9 @@ impl Core {
         if let Some(transfer) = state.transfer_mut(id) {
             transfer.state = TransferState::Running;
             transfer.path = Some(kind);
+            transfer.interface = interface;
             transfer.failure = None;
+            transfer.retry = None;
             transfer.done.store(already, Ordering::Relaxed);
             transfer.sample = (now, already);
             let mine = transfer.attempt.fetch_add(1, Ordering::Relaxed) + 1;
@@ -455,7 +521,9 @@ impl Core {
             done: Arc::new(AtomicU64::new(already)),
             state: TransferState::Running,
             path: Some(kind),
+            interface,
             failure: None,
+            retry: None,
             saved_to: None,
             started_at: super::now_seconds(),
             cancel,

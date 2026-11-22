@@ -19,6 +19,7 @@ workspace = true
 base64.workspace = true
 ed25519-dalek.workspace = true
 isthmus-awake.workspace = true
+isthmus-clipboard.workspace = true
 isthmus-core.workspace = true
 isthmus-input.workspace = true
 isthmus-link.workspace = true

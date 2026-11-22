@@ -456,6 +456,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "isthmus-clipboard"
+version = "0.1.1"
+dependencies = [
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "parking_lot",
+ "tracing",
+ "windows-sys",
+]
+
+[[package]]
 name = "isthmus-core"
 version = "0.1.1"
 dependencies = [
@@ -470,6 +482,7 @@ dependencies = [
  "base64",
  "ed25519-dalek",
  "isthmus-awake",
+ "isthmus-clipboard",
  "isthmus-core",
  "isthmus-input",
  "isthmus-link",

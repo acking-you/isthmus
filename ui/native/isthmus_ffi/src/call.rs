@@ -17,9 +17,9 @@ use isthmus_link::DeviceId;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
-use crate::error::CtlError;
+use crate::error::{CtlError, ErrorCode};
 use crate::handle::IsthmusHandle;
-use crate::host::{Host, Shutdown};
+use crate::host::{Host, Link, Shutdown};
 use crate::response::{Reply, parse_c_string, respond};
 use crate::update;
 
@@ -54,6 +54,8 @@ enum Op {
     LinkPair(DeviceId),
     /// The code read off the other device.
     LinkPairCode(String),
+    /// Accept the pairing another device asked for.
+    LinkPairAccept,
     /// Cancel or dismiss the pairing shown.
     LinkPairCancel,
     LinkUnpair(DeviceId),
@@ -67,6 +69,10 @@ enum Op {
     /// Show a received transfer (or, without an id, the receive folder) in
     /// the file manager.
     LinkReveal(Option<String>),
+    /// Share the clipboard with paired devices, or stop.
+    LinkClipboardSet(bool),
+    /// Raise macOS's clipboard prompt once.
+    ClipboardRequestAccess,
     /// Keep-awake's choice and whether it is in effect.
     AwakeStatus,
     /// Turn keeping the computer awake on or off.
@@ -113,6 +119,7 @@ impl Op {
             "link_status" => Op::LinkStatus,
             "link_pair" => Op::LinkPair(arg(&request, name, "peerId")?),
             "link_pair_code" => Op::LinkPairCode(arg(&request, name, "code")?),
+            "link_pair_accept" => Op::LinkPairAccept,
             "link_pair_cancel" => Op::LinkPairCancel,
             "link_unpair" => Op::LinkUnpair(arg(&request, name, "peerId")?),
             "link_send" => Op::LinkSend {
@@ -123,6 +130,8 @@ impl Op {
             "link_transfers_clear" => Op::LinkTransfersClear,
             "link_rename" => Op::LinkRename(arg(&request, name, "name")?),
             "link_reveal" => Op::LinkReveal(optional_arg(&request, "id")?),
+            "link_clipboard_set" => Op::LinkClipboardSet(arg(&request, name, "enabled")?),
+            "clipboard_request_access" => Op::ClipboardRequestAccess,
             "awake_status" => Op::AwakeStatus,
             "awake_set" => Op::AwakeSet(arg(&request, name, "enabled")?),
             "update_verify" => {
@@ -205,7 +214,7 @@ fn run(host: &Host, op: Op) -> Result<Reply, CtlError> {
                 .map_err(CtlError::from_service)?;
             Reply::data(json!({ "state": state }))
         }
-        Op::LinkStatus => Reply::data(host.link()?.status()),
+        Op::LinkStatus => link_status(&*host.link()?),
         Op::LinkPair(peer) => {
             host.link()?.pair(&peer).map_err(CtlError::from_link)?;
             Ok(Reply::Message("the other device shows a code".into()))
@@ -215,6 +224,10 @@ fn run(host: &Host, op: Op) -> Result<Reply, CtlError> {
                 .enter_code(&code)
                 .map_err(CtlError::from_link)?;
             Ok(Reply::Message("checking the code".into()))
+        }
+        Op::LinkPairAccept => {
+            host.link()?.accept_pairing().map_err(CtlError::from_link)?;
+            Ok(Reply::Message("accepted".into()))
         }
         Op::LinkPairCancel => {
             host.link()?.cancel_pairing();
@@ -243,13 +256,23 @@ fn run(host: &Host, op: Op) -> Result<Reply, CtlError> {
         }
         Op::LinkRename(name) => {
             host.link()?.rename(&name).map_err(CtlError::from_link)?;
-            Reply::data(host.link()?.status())
+            link_status(&*host.link()?)
         }
         Op::LinkReveal(id) => {
             host.link()?
                 .reveal(id.as_deref())
                 .map_err(CtlError::from_link)?;
             Ok(Reply::Message("shown".into()))
+        }
+        Op::LinkClipboardSet(enabled) => {
+            host.link()?
+                .set_clipboard_sharing(enabled)
+                .map_err(CtlError::from_link)?;
+            link_status(&*host.link()?)
+        }
+        Op::ClipboardRequestAccess => {
+            host.link()?.request_clipboard_access();
+            Ok(Reply::Message("macOS asks now".into()))
         }
         Op::AwakeStatus => Reply::data(host.awake()?.status()),
         Op::AwakeSet(enabled) => {
@@ -269,6 +292,20 @@ fn run(host: &Host, op: Op) -> Result<Reply, CtlError> {
             .into(),
         )),
     }
+}
+
+/// File sharing's snapshot with what this computer's clipboard allows
+/// beside it (`clipboardAccess`): one read for the Devices page, and a
+/// choice made in System Settings shows as a change of it.
+fn link_status(link: &dyn Link) -> Result<Reply, CtlError> {
+    let mut status = serde_json::to_value(link.status())
+        .map_err(|error| CtlError::new(ErrorCode::Internal, error.to_string()))?;
+    let access = serde_json::to_value(link.clipboard())
+        .map_err(|error| CtlError::new(ErrorCode::Internal, error.to_string()))?;
+    if let Value::Object(fields) = &mut status {
+        fields.insert("clipboardAccess".into(), access);
+    }
+    Reply::data(status)
 }
 
 /// Runs one operation and answers with the envelope, which the caller frees
@@ -517,6 +554,16 @@ mod tests {
             handle,
             r#"{"op": "link_pair_code", "code": "123 456"}"#,
         ));
+        ok(call(handle, r#"{"op": "link_pair_accept"}"#));
+        ok(call(
+            handle,
+            r#"{"op": "link_clipboard_set", "enabled": false}"#,
+        ));
+        let status = call(handle, r#"{"op": "link_status"}"#);
+        let access = &status["data"]["clipboardAccess"];
+        assert_eq!(access["access"], "ask", "{status}");
+        assert_eq!(access["blocked"], 2, "{status}");
+        ok(call(handle, r#"{"op": "clipboard_request_access"}"#));
         ok(call(handle, r#"{"op": "link_pair_cancel"}"#));
         let sent = call(
             handle,
@@ -547,6 +594,9 @@ mod tests {
             vec![
                 format!("pair {peer}"),
                 "code 123 456".to_owned(),
+                "accept pairing".to_owned(),
+                "clipboard false".to_owned(),
+                "clipboard access".to_owned(),
                 "cancel pairing".to_owned(),
                 format!("send {peer} /tmp/a|/tmp/b c"),
                 "cancel fake-transfer".to_owned(),

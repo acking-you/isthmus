@@ -35,8 +35,14 @@ pub const PREAMBLE: [u8; 8] = *b"ISTHMUS\x01";
 /// ChaCha20-Poly1305, BLAKE2s.
 pub const NOISE_PARAMS: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
 
-/// The protocol version in announcements and hellos.
-pub const PROTOCOL_VERSION: u32 = 1;
+/// The protocol version in announcements and hellos. 2 added pairing by
+/// confirmation (`PairCommit`, `PairNonce`, `PairReveal`) and the
+/// clipboard; a peer's version decides which pairing it is offered and
+/// whether it is sent the clipboard, so both keep talking to version 1.
+pub const PROTOCOL_VERSION: u32 = 2;
+
+/// The first version that pairs by confirmation and shares the clipboard.
+pub const CONFIRM_VERSION: u32 = 2;
 
 /// Noise's largest message.
 const MAX_FRAME: usize = 65535;
@@ -51,6 +57,15 @@ pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// The largest blob a peer may announce: an offer of the most files with
 /// long paths fits well inside it.
 pub const MAX_BLOB: u64 = 64 * 1024 * 1024;
+
+/// The largest clipboard blob: four megabytes of text, escaped.
+pub const MAX_CLIPBOARD_BLOB: u64 = 16 * 1024 * 1024;
+
+/// What a [`Message::Clipboard`]'s blob holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClipboardText {
+    pub text: String,
+}
 
 /// How big the buffers around the socket are: a few frames, so data frames
 /// go out in large writes.
@@ -112,7 +127,8 @@ pub enum Purpose {
     /// The long-lived connection between two paired devices: presence,
     /// renames, unpairing.
     Session,
-    /// A pairing with a code.
+    /// A pairing: by confirmation between two version 2 devices, else
+    /// with a code.
     Pair,
     /// One transfer of files.
     Transfer,
@@ -188,9 +204,25 @@ pub enum Message {
     PairConfirm {
         tag: String,
     },
-    /// Pairing: whether the dialler accepted the answerer's confirmation.
+    /// Pairing: whether the dialler accepted the answerer's confirmation;
+    /// by confirmation, whether the answerer's user accepted, and the
+    /// dialler's acknowledgement.
     PairResult {
         ok: bool,
+    },
+    /// Pairing by confirmation: the answerer's commitment to its nonce,
+    /// hex, sent before it sees the dialler's.
+    PairCommit {
+        commit: String,
+    },
+    /// Pairing by confirmation: the dialler's nonce, hex.
+    PairNonce {
+        nonce: String,
+    },
+    /// Pairing by confirmation: the answerer's nonce, hex, which must open
+    /// its commitment.
+    PairReveal {
+        nonce: String,
     },
     /// Transfer: what is coming. The entries follow as a blob.
     Offer {
@@ -216,6 +248,10 @@ pub enum Message {
     Blob {
         bytes: u64,
     },
+    /// Session: the sender's clipboard, a [`ClipboardText`] blob, follows.
+    /// Sent only to version 2 devices: a version 1 session would end at the
+    /// blob's data frames.
+    Clipboard,
     /// A message a later version added; ignored where it can be.
     #[serde(other)]
     Unknown,
@@ -236,6 +272,9 @@ impl Message {
             Message::PairSpake { .. } => "pairSpake",
             Message::PairConfirm { .. } => "pairConfirm",
             Message::PairResult { .. } => "pairResult",
+            Message::PairCommit { .. } => "pairCommit",
+            Message::PairNonce { .. } => "pairNonce",
+            Message::PairReveal { .. } => "pairReveal",
             Message::Offer { .. } => "offer",
             Message::Accept => "accept",
             Message::FileStart { .. } => "fileStart",
@@ -243,6 +282,7 @@ impl Message {
             Message::Finished => "finished",
             Message::Cancel => "cancel",
             Message::Blob { .. } => "blob",
+            Message::Clipboard => "clipboard",
             Message::Unknown => "an unknown message",
         }
     }
@@ -608,7 +648,7 @@ mod tests {
     #[test]
     fn later_messages_and_fields_are_tolerated() {
         let unknown: Message =
-            serde_json::from_str(r#"{"type": "clipboard", "text": "x"}"#).unwrap();
+            serde_json::from_str(r#"{"type": "displayLayout", "screens": 2}"#).unwrap();
         assert_eq!(unknown, Message::Unknown);
         let ping: Message = serde_json::from_str(r#"{"type": "ping", "extra": 1}"#).unwrap();
         assert_eq!(ping, Message::Ping);

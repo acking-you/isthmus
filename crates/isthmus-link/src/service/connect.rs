@@ -47,6 +47,8 @@ pub(super) struct Opened {
     /// The peer's name and system from its welcome.
     pub name: String,
     pub os: PeerOs,
+    /// The protocol version its welcome said it speaks.
+    pub version: u32,
 }
 
 /// Why a connection could not be opened.
@@ -62,18 +64,33 @@ pub(super) enum OpenError {
     Lost(WireError),
 }
 
-/// Opens a connection to `peer` for `purpose`, over candidates of `only`
-/// that kind when given. The key is checked against the pinned one, or for
-/// a pairing against the id (an unpaired device has no pin yet).
+/// Which of a peer's paths a connection may take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Paths {
+    /// Every path, best first.
+    Any,
+    /// That kind alone (moving a LAN session to the cable).
+    Only(PathKind),
+    /// Every other kind first, then that one: the path that just stalled
+    /// is tried last, though it may still be the only one.
+    AvoidFirst(PathKind),
+}
+
+/// Opens a connection to `peer` for `purpose` over the candidates `paths`
+/// allows. The key is checked against the pinned one, or for a pairing
+/// against the id (an unpaired device has no pin yet).
 pub(super) async fn open(
     core: &Arc<Core>,
     peer: &DeviceId,
     purpose: Purpose,
-    only: Option<PathKind>,
+    paths: Paths,
 ) -> Result<Opened, OpenError> {
     let mut candidates = core.candidates(peer);
-    if let Some(only) = only {
-        candidates.retain(|candidate| candidate.kind == only);
+    match paths {
+        Paths::Any => {}
+        Paths::Only(only) => candidates.retain(|candidate| candidate.kind == only),
+        // A stable sort keeps the rank within each group.
+        Paths::AvoidFirst(avoid) => candidates.sort_by_key(|candidate| candidate.kind == avoid),
     }
     let locals = core.locals();
     let (stream, won) = race(candidates, locals)
@@ -101,7 +118,9 @@ pub(super) async fn open(
         .await
         .map_err(OpenError::Lost)?;
     match reader.message_within(HELLO_TIMEOUT).await {
-        Ok(Message::Welcome { name, os, .. }) => Ok(Opened {
+        Ok(Message::Welcome {
+            name, os, version, ..
+        }) => Ok(Opened {
             reader,
             writer,
             remote,
@@ -110,6 +129,7 @@ pub(super) async fn open(
             addr: won.addr,
             name,
             os,
+            version,
         }),
         Ok(Message::Refused { reason }) => Err(OpenError::Refused(reason)),
         Ok(other) => Err(OpenError::Lost(WireError::Unexpected { got: other.name() })),

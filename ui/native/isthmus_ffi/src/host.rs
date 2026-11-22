@@ -25,9 +25,10 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, OnceLock};
 
 use isthmus_awake::{AwakeStatus, Error as AwakeError, KeepAwake};
+use isthmus_clipboard::{Access, SystemPasteboard, Watcher};
 use isthmus_input::context::FrontApp;
 use isthmus_input::status::{DeviceEntry, LoginItem, PermissionKind, SettingsPane};
 use isthmus_input::{
@@ -124,6 +125,7 @@ pub(crate) trait Link: Send + Sync {
     fn status(&self) -> LinkStatus;
     fn pair(&self, peer: &DeviceId) -> Result<(), LinkError>;
     fn enter_code(&self, code: &str) -> Result<(), LinkError>;
+    fn accept_pairing(&self) -> Result<(), LinkError>;
     fn cancel_pairing(&self);
     fn unpair(&self, peer: &DeviceId) -> Result<(), LinkError>;
     fn send(&self, peer: &DeviceId, paths: Vec<PathBuf>) -> Result<String, LinkError>;
@@ -131,52 +133,130 @@ pub(crate) trait Link: Send + Sync {
     fn clear_transfers(&self);
     fn rename(&self, name: &str) -> Result<(), LinkError>;
     fn reveal(&self, id: Option<&str>) -> Result<(), LinkError>;
+    fn set_clipboard_sharing(&self, enabled: bool) -> Result<(), LinkError>;
+    /// What this computer's clipboard allows, for the window.
+    fn clipboard(&self) -> ClipboardState;
+    /// Raises macOS's clipboard prompt once.
+    fn request_clipboard_access(&self);
     fn shutdown(&self);
 }
 
-impl Link for LinkService {
+/// This computer's clipboard, as far as sharing it goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ClipboardState {
+    /// Whether this system's clipboard can be shared at all.
+    pub supported: bool,
+    /// Whether Isthmus may read it without asking: `allowed`, `ask` or
+    /// `denied`.
+    pub access: ClipboardAccess,
+    /// Copies made here that were not shared for want of permission.
+    pub blocked: u64,
+}
+
+/// [`isthmus_clipboard::Access`], for the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum ClipboardAccess {
+    Allowed,
+    Ask,
+    Denied,
+}
+
+impl From<Access> for ClipboardAccess {
+    fn from(access: Access) -> Self {
+        match access {
+            Access::Allowed => ClipboardAccess::Allowed,
+            Access::Ask => ClipboardAccess::Ask,
+            Access::Denied => ClipboardAccess::Denied,
+        }
+    }
+}
+
+/// File sharing with the clipboard watcher that feeds it, as the app runs
+/// them: copies here go to [`LinkService::share_clipboard`], and text from
+/// paired devices comes back through the watcher, which keeps it from
+/// echoing. The watcher stops before the service.
+pub(crate) struct SharedLink {
+    service: Arc<LinkService>,
+    watcher: Option<Arc<Watcher>>,
+}
+
+impl Link for SharedLink {
     fn status(&self) -> LinkStatus {
-        LinkService::status(self)
+        self.service.status()
     }
 
     fn pair(&self, peer: &DeviceId) -> Result<(), LinkError> {
-        LinkService::pair(self, peer)
+        self.service.pair(peer)
     }
 
     fn enter_code(&self, code: &str) -> Result<(), LinkError> {
-        LinkService::enter_code(self, code)
+        self.service.enter_code(code)
+    }
+
+    fn accept_pairing(&self) -> Result<(), LinkError> {
+        self.service.accept_pairing()
     }
 
     fn cancel_pairing(&self) {
-        LinkService::cancel_pairing(self)
+        self.service.cancel_pairing()
     }
 
     fn unpair(&self, peer: &DeviceId) -> Result<(), LinkError> {
-        LinkService::unpair(self, peer)
+        self.service.unpair(peer)
     }
 
     fn send(&self, peer: &DeviceId, paths: Vec<PathBuf>) -> Result<String, LinkError> {
-        LinkService::send(self, peer, paths)
+        self.service.send(peer, paths)
     }
 
     fn cancel_transfer(&self, id: &str) -> Result<(), LinkError> {
-        LinkService::cancel_transfer(self, id)
+        self.service.cancel_transfer(id)
     }
 
     fn clear_transfers(&self) {
-        LinkService::clear_transfers(self)
+        self.service.clear_transfers()
     }
 
     fn rename(&self, name: &str) -> Result<(), LinkError> {
-        LinkService::rename(self, name)
+        self.service.rename(name)
     }
 
     fn reveal(&self, id: Option<&str>) -> Result<(), LinkError> {
-        LinkService::reveal(self, id)
+        self.service.reveal(id)
+    }
+
+    fn set_clipboard_sharing(&self, enabled: bool) -> Result<(), LinkError> {
+        self.service.set_clipboard_sharing(enabled)
+    }
+
+    fn clipboard(&self) -> ClipboardState {
+        match &self.watcher {
+            Some(watcher) => ClipboardState {
+                supported: true,
+                access: watcher.access().into(),
+                blocked: watcher.blocked(),
+            },
+            None => ClipboardState {
+                supported: false,
+                access: ClipboardAccess::Denied,
+                blocked: 0,
+            },
+        }
+    }
+
+    fn request_clipboard_access(&self) {
+        if let Some(watcher) = &self.watcher {
+            watcher.request_access();
+        }
     }
 
     fn shutdown(&self) {
-        LinkService::shutdown(self)
+        if let Some(watcher) = &self.watcher {
+            watcher.stop();
+        }
+        self.service.shutdown()
     }
 }
 
@@ -380,14 +460,43 @@ fn start_input_service() -> Result<Arc<dyn Service>, ServiceError> {
 }
 
 /// Starts file sharing on the user's data directory, with its change hints
-/// going to Dart's change callback.
+/// going to Dart's change callback, and the clipboard watcher beside it.
 fn start_link_service() -> Result<Arc<dyn Link>, CtlError> {
     let data_dir = isthmus_core::paths::data_dir()
         .map_err(|error| CtlError::new(ErrorCode::Io, error.to_string()))?;
     let on_change: isthmus_link::ChangeSink = Arc::new(events::emit_link);
-    let service = LinkService::start(LinkOptions::new(data_dir, Some(on_change)))
-        .map_err(CtlError::from_link)?;
-    Ok(Arc::new(service))
+    // The watcher starts after the service it feeds; text arriving before
+    // it does is dropped, as nothing was copied there yet.
+    let slot: Arc<OnceLock<Arc<Watcher>>> = Arc::new(OnceLock::new());
+    let landing = slot.clone();
+    let on_clipboard: isthmus_link::ClipboardSink = Arc::new(move |_, text| {
+        if let Some(watcher) = landing.get()
+            && let Err(error) = watcher.put(&text)
+        {
+            tracing::warn!(%error, "text from a paired device did not reach the clipboard");
+        }
+    });
+    let mut options = LinkOptions::new(data_dir, Some(on_change));
+    options.on_clipboard = Some(on_clipboard);
+    let service = Arc::new(LinkService::start(options).map_err(CtlError::from_link)?);
+    let watcher = SystemPasteboard::supported()
+        .then(|| {
+            // Weak: the service owns the watcher's sink, not the reverse.
+            let sharing = Arc::downgrade(&service);
+            Watcher::start(Arc::new(SystemPasteboard), move |text| {
+                if let Some(service) = sharing.upgrade() {
+                    service.share_clipboard(&text);
+                }
+            })
+            .map_err(|error| tracing::warn!(%error, "the clipboard watcher did not start"))
+            .ok()
+            .map(Arc::new)
+        })
+        .flatten();
+    if let Some(watcher) = &watcher {
+        let _ = slot.set(watcher.clone());
+    }
+    Ok(Arc::new(SharedLink { service, watcher }))
 }
 
 /// Reads the keep-awake choice in the user's data directory and holds the

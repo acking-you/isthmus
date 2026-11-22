@@ -12,7 +12,9 @@ library;
 import 'dart:io';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart' show FontLoader, rootBundle;
 import 'package:flutter/widgets.dart' show Scrollable;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:isthmus_ui/src/shell/app_scope.dart';
@@ -39,6 +41,38 @@ void main() {
     test('previews are opt-in', () {}, skip: 'set ISTHMUS_UI_PREVIEW_DIR');
     return;
   }
+  // The Windows app in Chinese: its own caption buttons (drawn in Segoe
+  // glyphs a Mac does not have, so they show as boxes here) and the
+  // bundled Noto Sans SC.
+  testWidgets('preview windows devices zh', (tester) async {
+    debugDisableShadows = false;
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    try {
+      await tester.runAsync(() async {
+        await loadRealFonts();
+        // Segoe UI is not on a Mac: Google Sans Flex stands in for its
+        // Latin, so only the Chinese is the bundled face under test.
+        final segoe = FontLoader('Segoe UI');
+        for (final weight in ['Regular', 'Medium', 'SemiBold', 'Bold']) {
+          segoe.addFont(
+            rootBundle.load('assets/fonts/GoogleSansFlex-$weight.ttf'),
+          );
+        }
+        await segoe.load();
+      });
+      await pumpApp(
+        tester,
+        busyApi(),
+        page: AppPage.devices,
+        locale: const Locale('zh'),
+      );
+      await _capture(tester, 'windows-devices-zh');
+      await finish(tester);
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+      debugDisableShadows = true;
+    }
+  });
   for (final locale in [
     const Locale('en'),
     if (_cjk != null) const Locale('zh'),

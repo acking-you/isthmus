@@ -45,5 +45,5 @@ mod tests;
 
 pub use error::Error;
 pub use identity::DeviceId;
-pub use service::{ChangeSink, LinkOptions, LinkService};
+pub use service::{ChangeSink, ClipboardSink, LinkOptions, LinkService};
 pub use status::LinkStatus;

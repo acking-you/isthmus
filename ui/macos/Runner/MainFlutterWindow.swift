@@ -13,6 +13,9 @@ class MainFlutterWindow: NSWindow {
     // The drag-to-authorize card shown with System Settings' Accessibility
     // pane (PermissionHelper.swift).
     PermissionHelper.register(with: flutterViewController.engine.binaryMessenger)
+    // Notifications for clipboard copies while the window is hidden
+    // (Notifier.swift).
+    Notifier.register(with: flutterViewController.engine.binaryMessenger)
 
     super.awakeFromNib()
   }

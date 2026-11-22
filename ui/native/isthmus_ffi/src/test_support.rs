@@ -15,13 +15,13 @@ use isthmus_input::status::{
     SettingsPane, TapState,
 };
 use isthmus_input::{Error as ServiceError, Preset, PresetTarget, Settings, Status};
-use isthmus_link::status::Me;
+use isthmus_link::status::{ClipboardView, Me};
 use isthmus_link::store::PeerOs;
 use isthmus_link::{DeviceId, Error as LinkError, LinkStatus};
 use parking_lot::Mutex;
 
 use crate::error::CtlError;
-use crate::host::{Awake, Host, Link, Service};
+use crate::host::{Awake, ClipboardAccess, ClipboardState, Host, Link, Service};
 
 /// A service that keeps its settings in memory and records what it was
 /// asked, with switches for the failures a test needs.
@@ -175,6 +175,10 @@ impl Link for FakeLink {
             peers: Vec::new(),
             pairing: None,
             transfers: Vec::new(),
+            clipboard: ClipboardView {
+                enabled: true,
+                last: None,
+            },
         }
     }
 
@@ -186,6 +190,28 @@ impl Link for FakeLink {
     fn enter_code(&self, code: &str) -> Result<(), LinkError> {
         self.record(format!("code {code}"));
         Ok(())
+    }
+
+    fn accept_pairing(&self) -> Result<(), LinkError> {
+        self.record("accept pairing".into());
+        Ok(())
+    }
+
+    fn set_clipboard_sharing(&self, enabled: bool) -> Result<(), LinkError> {
+        self.record(format!("clipboard {enabled}"));
+        Ok(())
+    }
+
+    fn clipboard(&self) -> ClipboardState {
+        ClipboardState {
+            supported: true,
+            access: ClipboardAccess::Ask,
+            blocked: 2,
+        }
+    }
+
+    fn request_clipboard_access(&self) {
+        self.record("clipboard access".into());
     }
 
     fn cancel_pairing(&self) {

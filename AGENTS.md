@@ -14,18 +14,21 @@ Rules for changing this repository. `CLAUDE.md` is a symlink to this file.
 - One `isthmus` binary (`crates/isthmus-cli`) with the commands `devices`,
   `status`, `settings`, `preset`, `run`, `restore` and `inspect`, and one
   app (`ui/`, for macOS and Windows); both drive `isthmus-input`, and the
-  app also drives `isthmus-link` (discovery, pairing, file sharing) and
+  app also drives `isthmus-link` (discovery, pairing, file sharing, the
+  clipboard's transport), `isthmus-clipboard` (the system clipboard) and
   `isthmus-awake` (keeping the computer awake while its screen sleeps).
 - Dependencies point one way: `isthmus-cli` → `isthmus-input`, and
   `isthmus-ffi` (`ui/native/isthmus_ffi`) → `isthmus-input`,
-  `isthmus-link` and `isthmus-awake`, all → `isthmus-core`. A new feature
+  `isthmus-link`, `isthmus-awake` and `isthmus-clipboard`, the first three
+  → `isthmus-core`. The FFI joins the clipboard to the link; neither
+  crate knows the other. A new feature
   (display alignment, keyboard and mouse across devices) is a sibling crate
   on `isthmus-core`, never a module inside another
   ([docs/roadmap.md](docs/roadmap.md)).
 - A feature crate names an operating system's API only under
   `src/platform/<os>`, chosen at compile time: macOS for `isthmus-input`
   (every other OS gets `Unsupported`), macOS and Windows for
-  `isthmus-link` and `isthmus-awake`. Everything above it (settings, device
+  `isthmus-link`, `isthmus-awake` and `isthmus-clipboard`. Everything above it (settings, device
   grouping, the mapping tables, the engines, the journal's decisions, path
   ranking, the wire protocol) is plain data or portable async code, tested
   on any host.
@@ -86,6 +89,10 @@ Rules for changing this repository. `CLAUDE.md` is a symlink to this file.
 - Nothing from the network names a place on disk unchecked: offered paths
   go through `files::safe_relative`, and files land in a staging folder
   until all of them are complete.
+- The clipboard goes only to paired devices on protocol version 2, only
+  while sharing is on at both ends, never what a password manager marks
+  concealed or transient, and on a Mac it is read only once the user has
+  set Isthmus to always allow (no prompt per copy).
 - One instance per Mac: the `instance.lock` `flock` decides which process
   changes the system. Every other one (another build, or `isthmus run`) runs
   but changes nothing. Release and `-local` builds share the lock; likewise
@@ -171,7 +178,8 @@ Run what your change touches and say what you could not run.
   stating the contract.
 - Never change the live system in a test: no HID property writes, no active
   event taps, no posted events, no `defaults write`, `tccutil` or login
-  items, no power assertions or requests, no installers run. The decisions
+  items, no power assertions or requests, no clipboard reads or writes,
+  no installers run. The decisions
   are pure functions tested on plain values; what needs the system is
   checked by hand, read-only where possible.
 - Link tests run services on loopback with discovery off and scratch data

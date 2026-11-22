@@ -28,6 +28,13 @@ class LinkStore extends ChangeNotifier {
   /// Another device asked to pair: the code to show is up.
   void Function(PairingInfo pairing)? onPairingRequest;
 
+  /// A copy crossed to or from a paired device.
+  void Function(ClipboardEvent event)? onClipboard;
+
+  /// What this computer's clipboard allows, from the last snapshot.
+  ClipboardState get clipboard =>
+      status?.clipboardAccess ?? ClipboardState.unknown;
+
   /// The last snapshot, or null before the first read lands.
   LinkStatus? status;
 
@@ -84,8 +91,13 @@ class LinkStore extends ChangeNotifier {
   }
 
   /// Tells the app what just happened that it shows outside the page: a
-  /// receive that finished, a pairing request that arrived.
+  /// receive that finished, a pairing request that arrived, a copy that
+  /// crossed.
   void _announce(LinkStatus previous, LinkStatus next) {
+    final copy = next.clipboard.last;
+    if (copy != null && copy.serial != previous.clipboard.last?.serial) {
+      onClipboard?.call(copy);
+    }
     final before = {
       for (final transfer in previous.transfers) transfer.id: transfer.state,
     };
@@ -99,11 +111,10 @@ class LinkStore extends ChangeNotifier {
     final pairing = next.pairing;
     final was = previous.pairing;
     if (pairing != null &&
-        pairing.role == PairRole.incoming &&
-        pairing.stage == PairStage.code &&
+        _asksThisUser(pairing) &&
         (was == null ||
+            !_asksThisUser(was) ||
             was.peerId != pairing.peerId ||
-            was.stage != PairStage.code ||
             was.code != pairing.code)) {
       onPairingRequest?.call(pairing);
     }
@@ -147,7 +158,7 @@ class LinkStore extends ChangeNotifier {
     return sent;
   }
 
-  /// Asks [peerId] to pair; it shows a code.
+  /// Asks [peerId] to pair; both show a code, and it accepts.
   Future<bool> pair(String peerId) =>
       _run(StoreAction.linkPair, () => api.linkPair(peerId));
 
@@ -155,7 +166,28 @@ class LinkStore extends ChangeNotifier {
   Future<bool> enterCode(String code) =>
       _run(StoreAction.linkPair, () => api.linkPairCode(code));
 
-  /// Cancels the pairing in progress, or closes one that finished.
+  /// Shares the clipboard with paired devices, or stops.
+  Future<bool> setClipboardSharing(bool enabled) => _run(
+    StoreAction.linkClipboard,
+    () async => _apply(await api.linkClipboardSet(enabled)),
+  );
+
+  /// Raises macOS's prompt, so Isthmus can be set to always allow.
+  Future<bool> requestClipboardAccess() =>
+      _run(StoreAction.linkClipboard, api.clipboardRequestAccess);
+
+  /// Accepts the pairing another device asked for.
+  Future<bool> acceptPairing() =>
+      _run(StoreAction.linkPair, api.linkPairAccept);
+
+  /// Whether [pairing] waits on this computer's user: to accept, once both
+  /// show their code, or to read the code off for a version 1 device.
+  static bool _asksThisUser(PairingInfo pairing) =>
+      pairing.role == PairRole.incoming &&
+      (pairing.stage == PairStage.code || pairing.stage == PairStage.confirm);
+
+  /// Cancels the pairing in progress, declines one waiting to be accepted,
+  /// or closes one that finished.
   Future<bool> cancelPairing() =>
       _run(StoreAction.linkPair, api.linkPairCancel);
 

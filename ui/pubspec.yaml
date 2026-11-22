@@ -49,6 +49,7 @@ dependencies:
   # Rust), and opening a release's page in the browser.
   crypto: ^3.0.7
   url_launcher: ^6.3.0
+  local_notifier: ^0.1.6
 
 dev_dependencies:
   flutter_test:
@@ -71,6 +72,7 @@ flutter:
     # bundled and registered in main.dart rather than only living in the repo.
     - assets/fonts/OFL-GoogleSansFlex.txt
     - assets/fonts/OFL-GeistMono.txt
+    - assets/fonts/OFL-NotoSansSC.txt
 
   fonts:
     # The design system's faces, after POCOX (SIL OFL): Google Sans Flex for
@@ -95,3 +97,17 @@ flutter:
           weight: 500
         - asset: assets/fonts/GeistMono-SemiBold.ttf
           weight: 600
+    # Chinese on Windows, reached through fontFamilyFallback ahead of
+    # Microsoft YaHei, which has no 500 or 600 (a Mac has PingFang SC first).
+    # Static instances of a GB2312 subset, as pb-mapper ships them; regenerate
+    # with tool/gen_cjk_subset.mjs (assets/fonts/README.md).
+    - family: NotoSansSC
+      fonts:
+        - asset: assets/fonts/NotoSansSC-Regular.subset.ttf
+          weight: 400
+        - asset: assets/fonts/NotoSansSC-Medium.subset.ttf
+          weight: 500
+        - asset: assets/fonts/NotoSansSC-SemiBold.subset.ttf
+          weight: 600
+        - asset: assets/fonts/NotoSansSC-Bold.subset.ttf
+          weight: 700

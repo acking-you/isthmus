@@ -50,14 +50,15 @@ use crate::pairing::PairCode;
 use crate::path::{self, Candidate, LocalInterface, PathKind};
 use crate::platform;
 use crate::status::{
-    ConnectionView, Direction, LinkStatus, LocalPath, Me, PairFailure, PairRole, PairStage,
-    PairingView, PeerView, TransferFailure, TransferState, TransferView,
+    ClipboardEvent, ClipboardView, ConnectionView, Direction, LinkStatus, LocalPath, Me,
+    PairFailure, PairRole, PairStage, PairingView, PeerView, RetryView, TransferFailure,
+    TransferState, TransferView,
 };
 use crate::store::{
     self, IDENTITY_FILE, LOCK_FILE, LinkSettings, PEERS_FILE, PairedPeer, PeerOs, PeersFile,
     SETTINGS_FILE,
 };
-use crate::wire::{self, Message, PROTOCOL_VERSION, Purpose, Refusal};
+use crate::wire::{self, CONFIRM_VERSION, Message, PROTOCOL_VERSION, Purpose, Refusal};
 
 /// The port Isthmus listens on when it is free; any free port otherwise.
 /// A fixed port lets a remembered address work after a restart and lets a
@@ -105,7 +106,17 @@ pub struct LinkOptions {
     /// Listen on loopback only and accept loopback addresses as a path:
     /// two services in one test process.
     pub loopback: bool,
+    /// The protocol version this device says it speaks
+    /// ([`crate::wire::PROTOCOL_VERSION`]); lower only to stand in for an
+    /// older device in a test.
+    pub protocol_version: u32,
+    /// Where text another device copied goes, to be put on this
+    /// computer's clipboard; `None` drops it.
+    pub on_clipboard: Option<ClipboardSink>,
 }
+
+/// Puts text a paired device copied onto this computer's clipboard.
+pub type ClipboardSink = Arc<dyn Fn(&DeviceId, String) + Send + Sync>;
 
 impl LinkOptions {
     /// The options the app uses: the real network, the default port.
@@ -117,6 +128,8 @@ impl LinkOptions {
             port: None,
             receive_dir: None,
             loopback: false,
+            protocol_version: PROTOCOL_VERSION,
+            on_clipboard: None,
         }
     }
 }
@@ -136,8 +149,11 @@ pub(crate) struct Core {
     os: PeerOs,
     port: u16,
     loopback: bool,
+    /// What hellos and welcomes say ([`LinkOptions::protocol_version`]).
+    protocol_version: u32,
     state: Mutex<State>,
     on_change: Option<ChangeSink>,
+    on_clipboard: Option<ClipboardSink>,
     progress_dirty: AtomicBool,
     discovery: Mutex<Option<Discovery>>,
     shutdown: watch::Sender<bool>,
@@ -158,6 +174,8 @@ struct State {
     retry: HashMap<DeviceId, Retry>,
     pairing: Option<Pairing>,
     last_incoming_pair: Option<Instant>,
+    /// The latest copy that crossed, either way.
+    clipboard: Option<ClipboardEvent>,
     transfers: Vec<Transfer>,
     locals: Vec<LocalInterface>,
 }
@@ -176,6 +194,8 @@ struct Session {
     interface: Option<String>,
     addr: SocketAddr,
     dialed_by_lower: bool,
+    /// The protocol version the peer said it speaks.
+    version: u32,
     tx: mpsc::UnboundedSender<SessionCommand>,
 }
 
@@ -192,6 +212,8 @@ pub(crate) enum SessionCommand {
     Close,
     Unpair,
     Rename(String),
+    /// Text copied here, for a version 2 device.
+    Clipboard(Arc<str>),
 }
 
 /// When to dial a paired device again.
@@ -218,19 +240,24 @@ struct Pairing {
     peer: DeviceId,
     peer_name: String,
     peer_os: PeerOs,
-    /// Incoming: the code shown.
+    /// The code shown: by confirmation on both sides, by code on the
+    /// incoming one.
     code: Option<PairCode>,
     stage: PairStage,
     failure: Option<PairFailure>,
-    /// Outgoing: where the typed code goes, until it is used.
+    /// Outgoing, by code: where the typed code goes, until it is used.
     code_tx: Option<oneshot::Sender<PairCode>>,
+    /// Incoming, by confirmation: where the user's acceptance goes.
+    accept_tx: Option<oneshot::Sender<()>>,
     cancel: watch::Sender<bool>,
 }
 
 impl Pairing {
     fn is_active(&self) -> bool {
         match self.stage {
-            PairStage::Connecting | PairStage::Code | PairStage::Verifying => true,
+            PairStage::Connecting | PairStage::Code | PairStage::Confirm | PairStage::Verifying => {
+                true
+            }
             PairStage::Paired | PairStage::Failed => false,
         }
     }
@@ -248,7 +275,11 @@ struct Transfer {
     done: Arc<AtomicU64>,
     state: TransferState,
     path: Option<PathKind>,
+    /// The path's interface on this computer.
+    interface: Option<String>,
     failure: Option<TransferFailure>,
+    /// Why it is retrying, or why its last attempt stopped.
+    retry: Option<RetryView>,
     saved_to: Option<PathBuf>,
     started_at: u64,
     cancel: watch::Sender<bool>,
@@ -309,6 +340,7 @@ impl LinkService {
             os: platform::this_os(),
             port,
             loopback: options.loopback,
+            protocol_version: options.protocol_version,
             state: Mutex::new(State {
                 settings,
                 peers,
@@ -316,6 +348,7 @@ impl LinkService {
                 ..State::default()
             }),
             on_change: options.on_change,
+            on_clipboard: options.on_clipboard,
             progress_dirty: AtomicBool::new(false),
             discovery: Mutex::new(None),
             shutdown,
@@ -353,8 +386,9 @@ impl LinkService {
         self.core.status()
     }
 
-    /// Asks `peer` to pair. The other device shows a code, which the user
-    /// then enters here with [`Self::enter_code`].
+    /// Asks `peer` to pair. Both devices then show the same code and the
+    /// other device's user accepts there; a version 1 device shows a code
+    /// instead, which the user enters here with [`Self::enter_code`].
     pub fn pair(&self, peer: &DeviceId) -> Result<(), Error> {
         let core = &self.core;
         let (serial, code_rx, cancel) = {
@@ -384,6 +418,7 @@ impl LinkService {
                 stage: PairStage::Connecting,
                 failure: None,
                 code_tx: Some(code_tx),
+                accept_tx: None,
                 cancel,
             });
             (serial, code_rx, cancel_rx)
@@ -415,7 +450,26 @@ impl LinkService {
         sender.send(code).map_err(|_| Error::NoPairing)
     }
 
-    /// Cancels the pairing in progress, or dismisses one that finished.
+    /// Accepts the pairing another device asked for, once both show their
+    /// code.
+    pub fn accept_pairing(&self) -> Result<(), Error> {
+        let mut state = self.core.state.lock();
+        let pairing = state
+            .pairing
+            .as_mut()
+            .filter(|pairing| {
+                pairing.role == PairRole::Incoming && pairing.stage == PairStage::Confirm
+            })
+            .ok_or(Error::NoPairing)?;
+        let accept = pairing.accept_tx.take().ok_or(Error::NoPairing)?;
+        pairing.stage = PairStage::Verifying;
+        drop(state);
+        self.core.changed();
+        accept.send(()).map_err(|_| Error::NoPairing)
+    }
+
+    /// Cancels the pairing in progress, declines one waiting to be
+    /// accepted, or dismisses one that finished.
     pub fn cancel_pairing(&self) {
         let mut state = self.core.state.lock();
         if let Some(pairing) = state.pairing.take() {
@@ -474,7 +528,9 @@ impl LinkService {
             done: Arc::new(AtomicU64::new(0)),
             state: TransferState::Connecting,
             path: None,
+            interface: None,
             failure: None,
+            retry: None,
             saved_to: None,
             started_at: now_seconds(),
             cancel,
@@ -505,6 +561,69 @@ impl LinkService {
             .find(|transfer| transfer.id == id)
             .ok_or_else(|| Error::UnknownTransfer { id: id.to_owned() })?;
         let _ = transfer.cancel.send(true);
+        // A receive waiting for its sender to come back has no task to hear
+        // the cancel: it ends here, and its partial files go.
+        let waiting =
+            transfer.direction == Direction::Receive && transfer.state == TransferState::Retrying;
+        drop(state);
+        if waiting {
+            self.core.finish_transfer(id, Outcome::Canceled, None);
+            let staging = files::staging_dir(&self.core.receive_dir(), id);
+            self.core
+                .handle
+                .spawn_blocking(move || std::fs::remove_dir_all(staging));
+        }
+        Ok(())
+    }
+
+    /// Shares `text`, just copied on this computer, with every paired device
+    /// connected now that can take it; answers how many it went to. Nothing
+    /// goes while sharing is off.
+    pub fn share_clipboard(&self, text: &str) -> usize {
+        let mut state = self.core.state.lock();
+        if !state.settings.shares_clipboard() {
+            return 0;
+        }
+        let shared: Arc<str> = Arc::from(text);
+        let mut peers = Vec::new();
+        for (id, session) in &state.sessions {
+            if session.version >= CONFIRM_VERSION
+                && session
+                    .tx
+                    .send(SessionCommand::Clipboard(shared.clone()))
+                    .is_ok()
+            {
+                let name = state
+                    .paired(id)
+                    .map_or_else(|| id.to_string(), |paired| paired.name.clone());
+                peers.push(name);
+            }
+        }
+        let sent = peers.len();
+        if sent > 0 {
+            state.clipboard = Some(clipboard_event(
+                self.core.next_serial(),
+                Direction::Send,
+                peers,
+                text,
+            ));
+            drop(state);
+            self.core.changed();
+        }
+        sent
+    }
+
+    /// Turns sharing the clipboard with paired devices on or off, and
+    /// remembers it in `link.json`.
+    pub fn set_clipboard_sharing(&self, enabled: bool) -> Result<(), Error> {
+        let mut state = self.core.state.lock();
+        let mut settings = state.settings.clone();
+        // Unset means on, so the file says nothing until it is turned off.
+        settings.clipboard = (!enabled).then_some(false);
+        store::write(&self.core.data_dir.join(SETTINGS_FILE), &settings)?;
+        state.settings = settings;
+        drop(state);
+        self.core.changed();
         Ok(())
     }
 
@@ -661,6 +780,29 @@ impl Core {
     }
 
     /// The name others see.
+    /// `peer` copied `text`: onto this computer's clipboard with it, unless
+    /// sharing is off here, and say so.
+    fn clipboard_received(&self, peer: &DeviceId, text: String) {
+        let mut state = self.state.lock();
+        if !state.settings.shares_clipboard() {
+            return;
+        }
+        let name = state
+            .paired(peer)
+            .map_or_else(|| peer.to_string(), |paired| paired.name.clone());
+        state.clipboard = Some(clipboard_event(
+            self.next_serial(),
+            Direction::Receive,
+            vec![name],
+            &text,
+        ));
+        drop(state);
+        if let Some(sink) = &self.on_clipboard {
+            sink(peer, text);
+        }
+        self.changed();
+    }
+
     fn name(&self, settings: &LinkSettings) -> String {
         settings
             .name
@@ -682,7 +824,7 @@ impl Core {
             purpose,
             name: self.name(&self.state.lock().settings),
             os: self.os,
-            version: PROTOCOL_VERSION,
+            version: self.protocol_version,
             port: self.port,
         }
     }
@@ -691,7 +833,7 @@ impl Core {
         Message::Welcome {
             name: self.name(&self.state.lock().settings),
             os: self.os,
-            version: PROTOCOL_VERSION,
+            version: self.protocol_version,
             port: self.port,
         }
     }
@@ -914,6 +1056,7 @@ impl Core {
                 interface: link.interface.clone(),
                 addr: link.addr,
                 dialed_by_lower,
+                version: link.version,
                 tx,
             },
         );
@@ -1022,20 +1165,36 @@ impl Core {
                 }
             }
             pairing.code_tx = None;
+            pairing.accept_tx = None;
             drop(state);
             self.changed();
         }
     }
 
-    /// Starts showing a code for `peer`'s pairing request, unless a pairing
-    /// is already running or the last request came under two seconds ago
-    /// (one guess per code, and not many codes a minute).
+    /// Shows `code` for pairing `serial`, now waiting on a user's
+    /// confirmation: this one's, through `accept_tx`, when it is incoming.
+    fn show_comparison(&self, serial: u64, code: PairCode, accept_tx: Option<oneshot::Sender<()>>) {
+        let mut state = self.state.lock();
+        if let Some(pairing) = state.pairing.as_mut().filter(|p| p.serial == serial) {
+            pairing.code = Some(code);
+            pairing.stage = PairStage::Confirm;
+            pairing.accept_tx = accept_tx;
+            drop(state);
+            self.changed();
+        }
+    }
+
+    /// Starts `peer`'s pairing request, unless a pairing is already running
+    /// or the last request came under two seconds ago (one guess per code,
+    /// and not many codes a minute). By code, it shows a fresh one at once;
+    /// by confirmation, the code comes once the nonces are exchanged.
     fn begin_incoming_pair(
         &self,
         peer: &DeviceId,
         name: &str,
         os: PeerOs,
-    ) -> Option<(u64, PairCode, watch::Receiver<bool>)> {
+        by_code: bool,
+    ) -> Option<(u64, Option<PairCode>, watch::Receiver<bool>)> {
         let mut state = self.state.lock();
         let now = Instant::now();
         let busy = state.pairing.as_ref().is_some_and(Pairing::is_active)
@@ -1045,7 +1204,11 @@ impl Core {
         if busy {
             return None;
         }
-        let code = PairCode::random().ok()?;
+        let code = if by_code {
+            Some(PairCode::random().ok()?)
+        } else {
+            None
+        };
         let serial = self.next_serial();
         let (cancel, cancel_rx) = watch::channel(false);
         state.last_incoming_pair = Some(now);
@@ -1055,10 +1218,15 @@ impl Core {
             peer: peer.clone(),
             peer_name: store::valid_name(name).unwrap_or_else(|| peer.to_string()),
             peer_os: os,
-            code: Some(code.clone()),
-            stage: PairStage::Code,
+            code: code.clone(),
+            stage: if by_code {
+                PairStage::Code
+            } else {
+                PairStage::Connecting
+            },
             failure: None,
             code_tx: None,
+            accept_tx: None,
             cancel,
         });
         drop(state);
@@ -1193,7 +1361,7 @@ impl Core {
             code: pairing
                 .code
                 .as_ref()
-                .filter(|_| pairing.stage == PairStage::Code)
+                .filter(|_| matches!(pairing.stage, PairStage::Code | PairStage::Confirm))
                 .map(|code| code.as_str().to_owned()),
             stage: pairing.stage,
             failure: pairing.failure,
@@ -1213,7 +1381,9 @@ impl Core {
                 bytes_per_second: transfer.speed,
                 state: transfer.state,
                 path: transfer.path,
+                interface: transfer.interface.clone(),
                 failure: transfer.failure,
+                retry: transfer.retry.clone(),
                 saved_to: transfer
                     .saved_to
                     .as_ref()
@@ -1233,6 +1403,10 @@ impl Core {
             peers,
             pairing,
             transfers,
+            clipboard: ClipboardView {
+                enabled: state.settings.shares_clipboard(),
+                last: state.clipboard.clone(),
+            },
         }
     }
 
@@ -1324,16 +1498,17 @@ async fn serve(core: Arc<Core>, stream: TcpStream, from: SocketAddr) {
         }
     };
     let peer = DeviceId::of(&remote.public_key);
-    let (purpose, name, os, port) = match reader.message_within(connect::HELLO_TIMEOUT).await {
-        Ok(Message::Hello {
-            purpose,
-            name,
-            os,
-            port,
-            ..
-        }) => (purpose, name, os, port),
-        _ => return,
-    };
+    let (purpose, name, os, port, version) =
+        match reader.message_within(connect::HELLO_TIMEOUT).await {
+            Ok(Message::Hello {
+                purpose,
+                name,
+                os,
+                port,
+                version,
+            }) => (purpose, name, os, port, version),
+            _ => return,
+        };
     let addr = SocketAddr::new(from.ip(), port);
     match purpose {
         Purpose::Session | Purpose::Transfer if !core.is_pinned(&peer, &remote.public_key) => {
@@ -1350,16 +1525,26 @@ async fn serve(core: Arc<Core>, stream: TcpStream, from: SocketAddr) {
                     interface,
                     addr,
                     dialed_by_me: false,
+                    version,
                 };
                 session::run(core, peer, link, reader, writer, name, os).await;
             }
         }
         Purpose::Transfer => {
             if writer.send(&core.welcome()).await.is_ok() {
-                receive::run(core, reader, writer, peer, kind).await;
+                receive::run(core, reader, writer, peer, kind, interface).await;
             }
         }
-        Purpose::Pair => pair::answer(core, reader, writer, remote, peer, name, os, addr).await,
+        Purpose::Pair => {
+            let hello = pair::Hello {
+                peer,
+                name,
+                os,
+                addr,
+                version,
+            };
+            pair::answer(core, reader, writer, remote, hello).await;
+        }
         Purpose::Unknown => {
             let _ = writer
                 .send(&Message::Refused {
@@ -1394,7 +1579,8 @@ async fn connector(core: Arc<Core>) {
 /// (moving a LAN session to the cable).
 async fn dial_session(core: Arc<Core>, peer: DeviceId, only: Option<PathKind>) {
     let upgrade = only.is_some();
-    match connect::open(&core, &peer, Purpose::Session, only).await {
+    let paths = only.map_or(connect::Paths::Any, connect::Paths::Only);
+    match connect::open(&core, &peer, Purpose::Session, paths).await {
         Ok(opened) => {
             core.dialed(&peer, false, upgrade);
             let link = session::Link {
@@ -1402,6 +1588,7 @@ async fn dial_session(core: Arc<Core>, peer: DeviceId, only: Option<PathKind>) {
                 interface: opened.interface,
                 addr: opened.addr,
                 dialed_by_me: true,
+                version: opened.version,
             };
             session::run(
                 core,
@@ -1497,4 +1684,28 @@ fn now_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| since.as_secs())
+}
+
+/// The longest preview a clipboard notice shows, in characters.
+const CLIPBOARD_PREVIEW: usize = 48;
+
+/// A copy that crossed, for the status: its first line, shortened.
+fn clipboard_event(
+    serial: u64,
+    direction: Direction,
+    peers: Vec<String>,
+    text: &str,
+) -> ClipboardEvent {
+    let first = text.trim().lines().next().unwrap_or_default().trim();
+    let mut preview: String = first.chars().take(CLIPBOARD_PREVIEW).collect();
+    if first.chars().count() > CLIPBOARD_PREVIEW || text.trim().lines().nth(1).is_some() {
+        preview.push('…');
+    }
+    ClipboardEvent {
+        serial,
+        direction,
+        peers,
+        chars: text.chars().count() as u64,
+        preview,
+    }
 }

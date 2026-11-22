@@ -40,9 +40,9 @@ class AppShell extends StatelessWidget {
                 ),
                 Expanded(
                   child: Padding(
-                    padding: const EdgeInsets.fromLTRB(
+                    padding: EdgeInsets.fromLTRB(
                       0,
-                      kSheetInset,
+                      captionHeight,
                       kSheetInset,
                       kSheetInset,
                     ),
@@ -62,15 +62,18 @@ class AppShell extends StatelessWidget {
                 ),
               ],
             ),
-            // The strip above the sheet is window chrome too: it drags.
+            // The strip above the sheet is window chrome too: it drags,
+            // and on Windows it holds the caption buttons.
             if (isFramelessDesktop)
-              const Positioned(
+              Positioned(
                 top: 0,
                 left: kRailWidth,
                 right: 0,
-                height: kSheetInset,
-                child: WindowDragArea(),
+                height: captionHeight,
+                child: const WindowDragArea(),
               ),
+            if (hasCaptionButtons)
+              const Positioned(top: 0, right: 0, child: CaptionButtons()),
           ],
         ),
       ),

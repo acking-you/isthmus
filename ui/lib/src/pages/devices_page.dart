@@ -11,6 +11,9 @@ import 'package:isthmus_ui/src/state/link_store.dart';
 import 'package:isthmus_ui/src/theme/app_icons.dart';
 import 'package:isthmus_ui/src/theme/app_theme.dart';
 import 'package:isthmus_ui/src/theme/metrics.dart';
+import 'package:isthmus_ui/src/updates/update_installers.dart'
+    show openInBrowser;
+import 'package:isthmus_ui/src/widgets/setting_rows.dart';
 import 'package:isthmus_ui/src/widgets/status.dart';
 import 'package:isthmus_ui/src/widgets/surfaces.dart';
 
@@ -87,6 +90,8 @@ class DevicesPage extends StatelessWidget {
                 EmptyNote(icon: AppIcons.pair, text: l10n.devicesPairedNone)
               else
                 for (final peer in paired) _PeerCard(link: link, peer: peer),
+              const SizedBox(height: 12),
+              _ClipboardCard(link: link, info: status.clipboard),
               SectionHeader(
                 title: l10n.devicesNearbySection,
                 count: nearby.length,
@@ -116,6 +121,91 @@ class DevicesPage extends StatelessWidget {
             ],
           );
         },
+      ),
+    );
+  }
+}
+
+/// Sharing the clipboard with paired devices: the switch, what last
+/// crossed, and on a Mac what macOS needs to let Isthmus read it.
+class _ClipboardCard extends StatelessWidget {
+  const _ClipboardCard({required this.link, required this.info});
+
+  final LinkStore link;
+  final ClipboardInfo info;
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final theme = Theme.of(context);
+    final state = link.clipboard;
+    final last = info.last;
+    final needsMac =
+        info.enabled &&
+        state.supported &&
+        state.access != ClipboardAccess.allowed;
+    return GroupCard(
+      key: const Key('devices-clipboard'),
+      title: l10n.clipboardTitle,
+      icon: AppIcons.clipboard,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SwitchRow(
+            switchKey: const Key('clipboard-switch'),
+            title: l10n.clipboardSwitch,
+            subtitle: l10n.clipboardHint,
+            value: info.enabled,
+            onChanged: link.setClipboardSharing,
+          ),
+          if (info.enabled && last != null) ...[
+            const SizedBox(height: 6),
+            _Quiet(
+              last.direction == TransferDirection.receive
+                  ? l10n.clipboardLastReceived(
+                      last.peers.join(', '),
+                      last.preview,
+                    )
+                  : l10n.clipboardLastSent(last.peers.join(', '), last.preview),
+              maxLines: 2,
+            ),
+          ],
+          if (needsMac) ...[
+            const SizedBox(height: 10),
+            Text(
+              state.access == ClipboardAccess.denied
+                  ? l10n.clipboardMacDenied
+                  : l10n.clipboardMacAsk,
+              key: const Key('clipboard-access-note'),
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: cautionColor(theme.colorScheme),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                if (state.access == ClipboardAccess.ask)
+                  FilledButton.tonal(
+                    key: const Key('clipboard-allow'),
+                    onPressed: link.requestClipboardAccess,
+                    child: Text(l10n.clipboardAllow),
+                  ),
+                OutlinedButton.icon(
+                  key: const Key('clipboard-settings'),
+                  onPressed: () => openInBrowser(
+                    Uri.parse(
+                      'x-apple.systempreferences:com.apple.preference.security?Privacy',
+                    ),
+                  ),
+                  icon: const Icon(AppIcons.external, size: AppIconSize.inline),
+                  label: Text(l10n.clipboardOpenSettings),
+                ),
+              ],
+            ),
+          ],
+        ],
       ),
     );
   }
@@ -360,6 +450,23 @@ class _PairingCardState extends State<PairingCard> {
         l10n.pairIncomingBody(name),
         [cancel],
       ),
+      (PairRole.incoming, PairStage.confirm) => (
+        l10n.pairIncomingTitle(name),
+        l10n.pairAcceptBody(name),
+        [
+          cancel,
+          FilledButton(
+            key: const Key('pairing-accept'),
+            onPressed: widget.link.acceptPairing,
+            child: Text(l10n.pairAccept),
+          ),
+        ],
+      ),
+      (PairRole.outgoing, PairStage.confirm) => (
+        l10n.pairWaitingTitle(name),
+        l10n.pairWaitingBody(name),
+        [cancel],
+      ),
       (_, PairStage.verifying) => (l10n.pairVerifying, null, [cancel]),
       (_, PairStage.paired) => (
         l10n.pairPaired(name),
@@ -404,9 +511,10 @@ class _PairingCardState extends State<PairingCard> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (pairing.role == PairRole.incoming &&
-              pairing.stage == PairStage.code &&
-              code != null) ...[
+          if (code != null &&
+              (pairing.stage == PairStage.confirm ||
+                  (pairing.role == PairRole.incoming &&
+                      pairing.stage == PairStage.code))) ...[
             Center(
               child: SelectableText(
                 '${code.substring(0, 3)} ${code.substring(3)}',
@@ -464,6 +572,7 @@ class _PairingCardState extends State<PairingCard> {
   static String _failure(AppLocalizations l10n, PairFailure? failure) =>
       switch (failure) {
         PairFailure.wrongCode => l10n.pairFailWrongCode,
+        PairFailure.declined => l10n.pairFailDeclined,
         PairFailure.unreachable => l10n.pairFailUnreachable,
         PairFailure.busy => l10n.pairFailBusy,
         PairFailure.canceled => l10n.pairFailCanceled,
@@ -699,6 +808,10 @@ class _TransferCard extends StatelessWidget {
         '${l10n.transferFiles(transfer.files)} · '
         '${formatBytes(transfer.totalBytes)}';
     final path = transfer.path;
+    final where = path == null
+        ? null
+        : [pathLabel(l10n, path), ?transfer.interface].join(' ');
+    final retry = transfer.retry;
     final line = switch (transfer.state) {
       TransferState.connecting => l10n.transferConnecting,
       TransferState.running => [
@@ -708,17 +821,33 @@ class _TransferCard extends StatelessWidget {
         ),
         if (transfer.bytesPerSecond > 0)
           l10n.transferSpeed(formatBytes(transfer.bytesPerSecond)),
-        if (path != null) pathLabel(l10n, path),
+        ?where,
       ].join(' · '),
-      TransferState.retrying => l10n.transferRetrying,
+      TransferState.retrying when retry == null => l10n.transferRetrying,
+      TransferState.retrying =>
+        sending
+            ? l10n.transferRetryingSend(retry!.attempt, _reason(l10n, retry))
+            : l10n.transferRetryingReceive(
+                transfer.peerName,
+                _reason(l10n, retry!),
+              ),
       TransferState.done => [
         l10n.transferDone,
         size,
         if (path != null) pathLabel(l10n, path),
       ].join(' · '),
       TransferState.canceled => l10n.transferCanceled,
-      TransferState.failed => _failure(l10n, transfer.failure),
+      TransferState.failed => [
+        _failure(l10n, transfer.failure),
+        if (retry != null) _reason(l10n, retry),
+      ].join(': '),
     };
+    // The system's own words, for whoever needs to know why.
+    final detail =
+        transfer.state == TransferState.retrying ||
+            transfer.state == TransferState.failed
+        ? retry?.detail
+        : null;
     final color = switch (transfer.state) {
       TransferState.done => successColor(scheme),
       TransferState.failed => scheme.error,
@@ -783,10 +912,12 @@ class _TransferCard extends StatelessWidget {
               padding: const EdgeInsets.only(right: 8),
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(kControlRadius),
+                // Retrying holds the real fraction: the transfer carries on
+                // from there, nothing is lost.
                 child: LinearProgressIndicator(
-                  value: transfer.state == TransferState.running
-                      ? transfer.progress
-                      : null,
+                  value: transfer.state == TransferState.connecting
+                      ? null
+                      : transfer.progress,
                   minHeight: 5,
                 ),
               ),
@@ -794,9 +925,36 @@ class _TransferCard extends StatelessWidget {
           ],
           const SizedBox(height: 6),
           StatusChip(color: color, label: line, filled: false),
+          if (detail != null) ...[
+            const SizedBox(height: 4),
+            SelectableText(
+              detail,
+              key: Key('transfer-detail-${transfer.id}'),
+              maxLines: 2,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ],
         ],
       ),
     );
+  }
+
+  /// What went wrong, in words: the path and its interface where it
+  /// matters.
+  static String _reason(AppLocalizations l10n, TransferRetry retry) {
+    final path = retry.path;
+    final where = path == null
+        ? l10n.retryTheConnection
+        : [pathLabel(l10n, path), ?retry.interface].join(' ');
+    return switch (retry.reason) {
+      RetryReason.stalled => l10n.retryStalled(where),
+      RetryReason.lost => l10n.retryLost(where),
+      RetryReason.unreachable => l10n.retryUnreachable,
+      RetryReason.busy => l10n.retryBusy,
+      RetryReason.other => l10n.transferRetrying,
+    };
   }
 
   static String _failure(AppLocalizations l10n, TransferFailure? failure) =>

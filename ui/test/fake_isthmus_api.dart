@@ -82,6 +82,8 @@ Map<String, Object?> linkJson({
   List<Map<String, Object?>> peers = const [],
   Map<String, Object?>? pairing,
   List<Map<String, Object?>> transfers = const [],
+  Map<String, Object?> clipboard = const {'enabled': true, 'last': null},
+  String clipboardAccess = 'allowed',
 }) => {
   'me': {
     'id': 'fedcba9876543210',
@@ -97,6 +99,12 @@ Map<String, Object?> linkJson({
   'peers': peers,
   'pairing': pairing,
   'transfers': transfers,
+  'clipboard': clipboard,
+  'clipboardAccess': {
+    'supported': true,
+    'access': clipboardAccess,
+    'blocked': 0,
+  },
 };
 
 /// Another device as Rust would send it.
@@ -130,6 +138,7 @@ Map<String, Object?> transferJson(
   int done = 500000,
   String? failure,
   String? savedTo,
+  Map<String, Object?>? retry,
 }) => {
   'id': id,
   'peerId': '0123456789abcdef',
@@ -143,6 +152,7 @@ Map<String, Object?> transferJson(
   'state': state,
   'path': 'direct',
   'failure': failure,
+  'retry': retry,
   'savedTo': savedTo,
   'startedAt': 0,
 };
@@ -335,6 +345,9 @@ class FakeIsthmusApi implements IsthmusApiClient {
   Future<void> linkPairCancel() async => _check('link_pair_cancel');
 
   @override
+  Future<void> linkPairAccept() async => _check('link_pair_accept');
+
+  @override
   Future<void> linkUnpair(String peerId) async => _check('link_unpair $peerId');
 
   @override
@@ -363,6 +376,20 @@ class FakeIsthmusApi implements IsthmusApiClient {
   @override
   Future<void> linkReveal([String? id]) async =>
       _check('link_reveal ${id ?? '-'}');
+
+  @override
+  Future<LinkStatus> linkClipboardSet(bool enabled) async {
+    _check('link_clipboard_set $enabled');
+    link = {
+      ...link,
+      'clipboard': {'enabled': enabled, 'last': null},
+    };
+    return LinkStatus.fromJson(link);
+  }
+
+  @override
+  Future<void> clipboardRequestAccess() async =>
+      _check('clipboard_request_access');
 
   /// Keep-awake as the library reports it.
   AwakeStatus awake = const AwakeStatus(

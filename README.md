@@ -79,12 +79,15 @@ and every change it makes to macOS is put back when it stops.
   like a replug, and Isthmus applies the settings again
   ([putting it back](docs/keyboard-and-mouse.md#system-changes-and-putting-them-back)).
 - **Files between your computers** — Isthmus on another Mac or PC shows up
-  by itself; pair once with a six-digit code and the two reconnect on their
-  own from then on. Drop files on the window and click Send beside a
+  by itself; pair once with a click on the other computer and the two
+  reconnect on their own from then on. Drop files on the window and click Send beside a
   device. A cable straight between the two (a USB Ethernet adapter on your
   KVM, say) is used first and the shared network second, and a transfer
-  that loses one carries on over the other
+  that loses one carries on over the other within seconds
   ([file sharing](docs/file-sharing.md)).
+- **One clipboard** — copy text on one computer, paste it on the other,
+  both ways, with a notice each time; what a password manager copies stays
+  put ([clipboard](docs/file-sharing.md#using-it)).
 - **Awake with the screen off** — one switch, in Settings or the menu bar,
   keeps the computer from sleeping on its own while the screen still turns
   off on its schedule: downloads, builds, remote sessions and file sharing

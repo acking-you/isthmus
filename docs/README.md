@@ -10,7 +10,7 @@ has a Chinese translation that changes with it.
 | Page | Covers |
 | --- | --- |
 | [Keyboard and mouse](keyboard-and-mouse.md) · [中文](keyboard-and-mouse.zh-CN.md) | the three layers, keyboard styles and layouts, the HID profiles, app classes, every shortcut, Alt+Tab, the wheel and the pointer, settings and presets, the journal and putting things back, limits |
-| [File sharing](file-sharing.md) · [中文](file-sharing.zh-CN.md) | finding other computers, pairing with a code, sending files, the cable-then-network paths, security, permissions and firewalls, the files it keeps, the protocol |
+| [File sharing](file-sharing.md) · [中文](file-sharing.zh-CN.md) | finding other computers, pairing with one click, sending files, sharing the clipboard, the cable-then-network paths and recovering a dropped transfer, security, permissions and firewalls, the files it keeps, the protocol |
 | [Updates and releases](updates.md) | how the app finds, checks and installs a new release, the update key, the Windows installer, and how a release is made |
 | [Changelog](../CHANGELOG.md) | what each release changed |
 

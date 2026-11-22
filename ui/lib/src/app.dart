@@ -10,6 +10,7 @@ import 'package:isthmus_ui/l10n/app_localizations.dart';
 import 'package:isthmus_ui/src/common/app_toast.dart';
 import 'package:isthmus_ui/src/common/file_drop.dart';
 import 'package:isthmus_ui/src/common/permission_card.dart';
+import 'package:isthmus_ui/src/common/system_notice.dart';
 import 'package:isthmus_ui/src/common/tray/tray_service.dart';
 import 'package:isthmus_ui/src/ffi/isthmus_api.dart';
 import 'package:isthmus_ui/src/ffi/isthmus_service.dart';
@@ -95,6 +96,7 @@ class _IsthmusAppState extends State<IsthmusApp> with WindowListener {
     _prefs.addListener(_onPrefs);
     _store.addListener(_refreshTray);
     _store.link.onReceived = _onReceived;
+    _store.link.onClipboard = _onClipboard;
     _store.link.onPairingRequest = (_) => _onPairingRequest();
     if (_desktop) {
       _store.addListener(_relaunchIfMacOSAsks);
@@ -261,6 +263,7 @@ class _IsthmusAppState extends State<IsthmusApp> with WindowListener {
       StoreAction.linkTransfer => l10n.failLinkTransfer,
       StoreAction.linkRename => l10n.failLinkRename,
       StoreAction.linkReveal => l10n.failLinkReveal,
+      StoreAction.linkClipboard => l10n.failLinkClipboard,
     };
     showToast(null, title, kind: ToastKind.error, description: error.message);
   }
@@ -273,6 +276,36 @@ class _IsthmusAppState extends State<IsthmusApp> with WindowListener {
       l10n.toastReceived(transfer.name, transfer.peerName),
       kind: ToastKind.success,
     );
+  }
+
+  /// A copy crossed to or from a paired device: a toast while the window is
+  /// in front, a system notification while Isthmus waits out of sight. One
+  /// notification id, so a run of copies leaves one on screen.
+  Future<void> _onClipboard(ClipboardEvent event) async {
+    final l10n = lookupAppLocalizations(_prefs.activeLocale);
+    final who = event.peers.join(', ');
+    final title = event.direction == TransferDirection.receive
+        ? l10n.clipboardReceivedTitle(who)
+        : l10n.clipboardSentTitle(who);
+    final body = event.preview.isEmpty
+        ? l10n.clipboardChars(event.chars)
+        : event.preview;
+    var inFront = !_desktop;
+    if (_desktop) {
+      try {
+        inFront =
+            await windowManager.isVisible() && await windowManager.isFocused();
+      } catch (_) {}
+    }
+    if (inFront) {
+      showToast(null, title, kind: ToastKind.info, description: body);
+    } else {
+      await SystemNotice.show(
+        id: 'isthmus-clipboard',
+        title: title,
+        body: body,
+      );
+    }
   }
 
   /// Another device asked to pair: its code is on the Devices page, so the

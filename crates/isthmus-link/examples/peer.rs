@@ -5,9 +5,10 @@
 //! cargo run -p isthmus-link --example peer -- "Test peer"
 //! ```
 //!
-//! It announces itself on the network like the app, prints the code when
-//! asked to pair, and takes commands on stdin: `list`, `pair <n>`,
-//! `code <digits>`, `send <n> <path>…`, `cancel`, `quit`. Its state lives in
+//! It announces itself on the network like the app, prints the code both
+//! devices show when asked to pair, and takes commands on stdin: `list`,
+//! `pair <n>`, `accept`, `code <digits>` (pairing with a version 1 device),
+//! `send <n> <path>…`, `cancel`, `quit`. Its state lives in
 //! the system's temp folder, apart from the app's; received files land in
 //! `Received` there.
 
@@ -45,6 +46,10 @@ fn main() {
             port: None,
             receive_dir: Some(receive_dir.clone()),
             loopback: false,
+            protocol_version: isthmus_link::wire::PROTOCOL_VERSION,
+            on_clipboard: Some(Arc::new(|_, text| {
+                println!("* clipboard from a paired device: {text}");
+            })),
         })
         .expect("file sharing starts"),
     );
@@ -58,7 +63,9 @@ fn main() {
         );
     }
     println!("received files go to {}", receive_dir.display());
-    println!("commands: list | pair <n> | code <digits> | send <n> <path>... | cancel | quit");
+    println!(
+        "commands: list | pair <n> | accept | code <digits> | send <n> <path>... | cancel | quit"
+    );
 
     let watcher = service.clone();
     std::thread::spawn(move || {
@@ -96,6 +103,7 @@ fn main() {
                 Some(id) => service.pair(&id).map_err(|e| e.to_string()),
                 None => Err("no such device; try `list`".into()),
             },
+            ["accept"] => service.accept_pairing().map_err(|e| e.to_string()),
             ["code", digits @ ..] => service
                 .enter_code(&digits.concat())
                 .map_err(|e| e.to_string()),
@@ -113,7 +121,7 @@ fn main() {
             ["quit"] | ["exit"] => break,
             [] => Ok(()),
             _ => Err(
-                "commands: list | pair <n> | code <digits> | send <n> <path>... | cancel | quit"
+                "commands: list | pair <n> | accept | code <digits> | send <n> <path>... | cancel | quit"
                     .into(),
             ),
         };
@@ -149,6 +157,18 @@ impl Seen {
             .pairing
             .as_ref()
             .map(|p| match (p.role, p.stage, &p.code) {
+                (PairRole::Incoming, PairStage::Confirm, Some(code)) => format!(
+                    "{} wants to pair; both show {} {}. Type `accept`, or `cancel` to decline",
+                    p.peer_name,
+                    &code[..3],
+                    &code[3..]
+                ),
+                (PairRole::Outgoing, PairStage::Confirm, Some(code)) => format!(
+                    "both devices show {} {}; waiting for {} to accept",
+                    &code[..3],
+                    &code[3..],
+                    p.peer_name
+                ),
                 (PairRole::Incoming, PairStage::Code, Some(code)) => format!(
                     "{} wants to pair. Type this code there: {} {}",
                     p.peer_name,

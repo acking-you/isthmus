@@ -14,6 +14,7 @@ use crate::status::{
     Direction, LinkStatus, PairFailure, PairRole, PairStage, TransferFailure, TransferState,
 };
 use crate::test_support::ScratchDir;
+use crate::wire::PROTOCOL_VERSION;
 
 /// How long any one step may take before the test fails.
 const STEP: Duration = Duration::from_secs(20);
@@ -21,6 +22,8 @@ const STEP: Duration = Duration::from_secs(20);
 struct Node {
     service: LinkService,
     changes: mpsc::Receiver<()>,
+    /// What paired devices copied, as it would go onto this clipboard.
+    clipboard: mpsc::Receiver<String>,
     receive: PathBuf,
     data: PathBuf,
     _scratch: ScratchDir,
@@ -28,14 +31,21 @@ struct Node {
 
 impl Node {
     fn new(label: &str) -> Self {
+        Self::speaking(label, PROTOCOL_VERSION)
+    }
+
+    /// A node that says it speaks `version`, standing in for an older
+    /// device.
+    fn speaking(label: &str, version: u32) -> Self {
         let scratch = ScratchDir::new(label);
         let data = scratch.path().join("data");
         let receive = scratch.path().join("received");
         std::fs::create_dir_all(&data).unwrap();
-        let (service, changes) = start(&data, &receive, None);
+        let (service, changes, clipboard) = start_speaking(&data, &receive, None, version);
         Self {
             service,
             changes,
+            clipboard,
             receive,
             data,
             _scratch: scratch,
@@ -73,13 +83,15 @@ impl Node {
             receive,
             data,
             _scratch,
+            ..
         } = self;
         drop(service);
         drop(changes);
-        let (service, changes) = start(&data, &receive, Some(port));
+        let (service, changes, clipboard) = start(&data, &receive, Some(port));
         Node {
             service,
             changes,
+            clipboard,
             receive,
             data,
             _scratch,
@@ -87,8 +99,21 @@ impl Node {
     }
 }
 
-fn start(data: &Path, receive: &Path, port: Option<u16>) -> (LinkService, mpsc::Receiver<()>) {
+/// A service, its change hints, and what it would put on the clipboard.
+type Started = (LinkService, mpsc::Receiver<()>, mpsc::Receiver<String>);
+
+fn start(data: &Path, receive: &Path, port: Option<u16>) -> Started {
+    start_speaking(data, receive, port, PROTOCOL_VERSION)
+}
+
+fn start_speaking(
+    data: &Path,
+    receive: &Path,
+    port: Option<u16>,
+    protocol_version: u32,
+) -> Started {
     let (tx, changes) = mpsc::channel();
+    let (clipboard_tx, clipboard) = mpsc::channel();
     let service = LinkService::start(LinkOptions {
         data_dir: data.to_path_buf(),
         on_change: Some(Arc::new(move || {
@@ -98,13 +123,55 @@ fn start(data: &Path, receive: &Path, port: Option<u16>) -> (LinkService, mpsc::
         port: Some(port.unwrap_or(0)),
         receive_dir: Some(receive.to_path_buf()),
         loopback: true,
+        protocol_version,
+        on_clipboard: Some(Arc::new(move |_, text| {
+            let _ = clipboard_tx.send(text);
+        })),
     })
     .unwrap();
-    (service, changes)
+    (service, changes, clipboard)
 }
 
-/// Pairs `a` (asking) with `b` (showing the code), as a user would.
+/// Pairs `a` (asking) with `b`, as a user would: both show the same code
+/// and `b`'s user accepts.
 fn pair(a: &Node, b: &Node) {
+    a.service.introduce(&b.service);
+    a.service.pair(&b.id()).unwrap();
+    let confirming = |s: &LinkStatus| {
+        s.pairing
+            .as_ref()
+            .is_some_and(|p| p.stage == PairStage::Confirm && p.code.is_some())
+    };
+    let asked = b.wait("the request to show", confirming);
+    let asking = a.wait("the code to show here too", confirming);
+    let shown = asked.pairing.unwrap();
+    assert_eq!(shown.role, PairRole::Incoming);
+    assert_eq!(
+        shown.code,
+        asking.pairing.unwrap().code,
+        "both show one code"
+    );
+    b.service.accept_pairing().unwrap();
+    finish_pairing(a, b);
+}
+
+/// Waits until both sides say the pairing is done.
+fn finish_pairing(a: &Node, b: &Node) {
+    a.wait("pairing to finish", |s| {
+        s.pairing
+            .as_ref()
+            .is_some_and(|p| p.stage == PairStage::Paired)
+    });
+    b.wait("pairing to finish", |s| {
+        s.pairing
+            .as_ref()
+            .is_some_and(|p| p.stage == PairStage::Paired)
+    });
+}
+
+/// Pairs `a` (asking) with `b` (showing the code) by code, as with a
+/// version 1 device: the user types the code `b` shows into `a`.
+fn pair_by_code(a: &Node, b: &Node) {
     a.service.introduce(&b.service);
     a.service.pair(&b.id()).unwrap();
     let shown = b.wait("the code to show", |s| {
@@ -119,16 +186,7 @@ fn pair(a: &Node, b: &Node) {
     });
     let code = shown.pairing.unwrap().code.unwrap();
     a.service.enter_code(&code).unwrap();
-    a.wait("pairing to finish", |s| {
-        s.pairing
-            .as_ref()
-            .is_some_and(|p| p.stage == PairStage::Paired)
-    });
-    b.wait("pairing to finish", |s| {
-        s.pairing
-            .as_ref()
-            .is_some_and(|p| p.stage == PairStage::Paired)
-    });
+    finish_pairing(a, b);
 }
 
 fn online_with(status: &LinkStatus, id: &DeviceId) -> bool {
@@ -157,10 +215,11 @@ fn assert_same_tree(left: &Path, right: &Path) {
     }
 }
 
-/// The code shown on one device, typed on the other, pairs both; each then
-/// pins the other and a session comes up without anything more.
+/// One click on the device being added pairs both: they show the same
+/// code, each then pins the other, and a session comes up without anything
+/// more.
 #[test]
-fn the_shown_code_pairs_both_devices_and_a_session_follows() {
+fn accepting_on_the_other_device_pairs_both_and_a_session_follows() {
     let a = Node::new("pair-a");
     let b = Node::new("pair-b");
     pair(&a, &b);
@@ -169,10 +228,46 @@ fn the_shown_code_pairs_both_devices_and_a_session_follows() {
     b.wait("a session with a", |s| online_with(s, &a_id));
 }
 
+/// Declining on the device being added fails the pairing on both sides as
+/// declined, and pins nothing anywhere.
+#[test]
+fn declining_pairs_nothing() {
+    let a = Node::new("decline-a");
+    let b = Node::new("decline-b");
+    a.service.introduce(&b.service);
+    a.service.pair(&b.id()).unwrap();
+    b.wait("the request to show", |s| {
+        s.pairing
+            .as_ref()
+            .is_some_and(|p| p.stage == PairStage::Confirm)
+    });
+    b.service.cancel_pairing();
+    let a_status = a.wait("a's pairing to be declined", |s| {
+        s.pairing
+            .as_ref()
+            .is_some_and(|p| p.failure == Some(PairFailure::Declined))
+    });
+    assert!(a_status.peers.iter().all(|peer| !peer.paired));
+    assert!(b.service.status().peers.iter().all(|peer| !peer.paired));
+}
+
+/// A device on version 1 is still paired with by code, whichever side
+/// asks: an old dialler gets a code shown, and a new dialler follows an old
+/// answerer's code.
+#[test]
+fn a_version_1_device_pairs_by_code_either_way() {
+    let new = Node::new("mixed-new");
+    let old = Node::speaking("mixed-old", 1);
+    pair_by_code(&old, &new);
+    let (new_id, old_id) = (new.id(), old.id());
+    new.wait("a session with the old device", |s| online_with(s, &old_id));
+    old.wait("a session with the new device", |s| online_with(s, &new_id));
+}
+
 /// A wrong code fails on both sides and pins nothing anywhere.
 #[test]
 fn a_wrong_code_pairs_nothing() {
-    let a = Node::new("wrong-a");
+    let a = Node::speaking("wrong-a", 1);
     let b = Node::new("wrong-b");
     a.service.introduce(&b.service);
     a.service.pair(&b.id()).unwrap();
@@ -335,4 +430,102 @@ fn a_receiver_cancel_stops_the_sender() {
         std::fs::read_dir(&b.receive).unwrap().next().is_none(),
         "nothing is left in the receive folder"
     );
+}
+
+/// A transfer whose receiver goes away mid-file says why it is retrying,
+/// carries on from where it stopped once the receiver is back, within
+/// seconds rather than a TCP timeout, and the file arrives whole.
+#[test]
+fn a_transfer_resumes_soon_after_its_receiver_comes_back() {
+    let a = Node::new("resume-a");
+    let b = Node::new("resume-b");
+    pair(&a, &b);
+    let b_id = b.id();
+    a.wait("a session with b", |s| online_with(s, &b_id));
+    let source = a._scratch.path().join("big.bin");
+    let big: Vec<u8> = (0..96_000_000u32).map(|i| (i % 253) as u8).collect();
+    std::fs::write(&source, &big).unwrap();
+    let id = a.service.send(&b_id, vec![source]).unwrap();
+    let of = |s: &LinkStatus| s.transfers.iter().find(|t| t.id == id).cloned();
+    a.wait("bytes to move", |s| {
+        of(s).is_some_and(|t| t.done_bytes > 1_000_000 && t.state == TransferState::Running)
+    });
+
+    let b = b.restart();
+    let retrying = a.wait("the sender to say why it retries", |s| {
+        of(s).is_some_and(|t| t.retry.is_some())
+    });
+    let retry = of(&retrying).unwrap().retry.unwrap();
+    assert!(retry.attempt >= 1, "{retry:?}");
+    let back = Instant::now();
+    let done = a.wait("the transfer to finish", |s| {
+        of(s).is_some_and(|t| t.state.is_finished())
+    });
+    let transfer = of(&done).unwrap();
+    assert_eq!(transfer.state, TransferState::Done, "{transfer:?}");
+    assert!(
+        back.elapsed() < Duration::from_secs(15),
+        "resumed after {:?}",
+        back.elapsed()
+    );
+    assert_eq!(std::fs::read(b.receive.join("big.bin")).unwrap(), big);
+}
+
+/// Text copied on one device lands on the other's clipboard, and both say
+/// so, with the device's name and a preview.
+#[test]
+fn a_copy_reaches_the_paired_device_and_both_say_so() {
+    let a = Node::new("clip-a");
+    let b = Node::new("clip-b");
+    pair(&a, &b);
+    let (a_id, b_id) = (a.id(), b.id());
+    a.wait("a session with b", |s| online_with(s, &b_id));
+    b.wait("a session with a", |s| online_with(s, &a_id));
+
+    assert_eq!(a.service.share_clipboard("hello from a\nsecond line"), 1);
+    let landed = b.clipboard.recv_timeout(STEP).unwrap();
+    assert_eq!(landed, "hello from a\nsecond line");
+    let sent = a.service.status().clipboard.last.unwrap();
+    assert_eq!(sent.direction, Direction::Send);
+    assert_eq!(sent.preview, "hello from a…");
+    let received = b.wait("b to say it received", |s| {
+        s.clipboard
+            .last
+            .as_ref()
+            .is_some_and(|event| event.direction == Direction::Receive)
+    });
+    assert_eq!(received.clipboard.last.unwrap().chars, 24);
+    // The session carried on after the clipboard.
+    assert!(online_with(&b.service.status(), &a_id));
+}
+
+/// Turned off on the receiving device, nothing lands there; turned off on
+/// the copying one, nothing leaves.
+#[test]
+fn clipboard_sharing_off_keeps_copies_home() {
+    let a = Node::new("clipoff-a");
+    let b = Node::new("clipoff-b");
+    pair(&a, &b);
+    let b_id = b.id();
+    a.wait("a session with b", |s| online_with(s, &b_id));
+    b.service.set_clipboard_sharing(false).unwrap();
+    assert!(!b.service.status().clipboard.enabled);
+    a.service.share_clipboard("secret plans");
+    assert!(b.clipboard.recv_timeout(Duration::from_secs(1)).is_err());
+
+    a.service.set_clipboard_sharing(false).unwrap();
+    assert_eq!(a.service.share_clipboard("more plans"), 0);
+}
+
+/// A version 1 device is never sent the clipboard, which would end its
+/// session, and stays connected.
+#[test]
+fn a_version_1_device_is_not_sent_the_clipboard() {
+    let new = Node::new("clipold-new");
+    let old = Node::speaking("clipold-old", 1);
+    pair_by_code(&old, &new);
+    let old_id = old.id();
+    new.wait("a session with the old device", |s| online_with(s, &old_id));
+    assert_eq!(new.service.share_clipboard("not for you"), 0);
+    assert!(online_with(&new.service.status(), &old_id));
 }

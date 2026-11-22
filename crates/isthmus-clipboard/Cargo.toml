@@ -1,0 +1,24 @@
+[package]
+name = "isthmus-clipboard"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "The system clipboard for sharing between computers: what was copied, read without a busy wait, and text from another computer put in its place"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+parking_lot.workspace = true
+tracing.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2.workspace = true
+objc2-app-kit = { workspace = true, features = ["NSPasteboard"] }
+objc2-foundation = { workspace = true, features = ["NSArray", "NSString"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_System_DataExchange", "Win32_System_Memory"] }

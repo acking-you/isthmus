@@ -1,17 +1,27 @@
-//! The cryptography of pairing: a six-digit code turned into a shared key
-//! with SPAKE2, and key confirmations bound to the connection.
+//! The cryptography of pairing, in two ways.
 //!
-//! The device being added shows a fresh random code; the user types it on
-//! the device that asked. Both run SPAKE2 with the code as the password and
-//! the two device ids as identities, then prove the key with an HMAC over
-//! the Noise handshake hash. That hash covers both static keys, so a man in
-//! the middle, who runs two handshakes with different hashes, fails the
-//! confirmation unless they guessed the code, one guess per attempt; an
-//! eavesdropper learns nothing to test codes against. Each code serves one
-//! attempt.
+//! **By confirmation** (both devices on version 2): one click on the device
+//! being added. The answerer commits to a random nonce (a SHA-256 of it),
+//! the dialler sends its own nonce, the answerer reveals its nonce, and both
+//! devices show six digits derived from the Noise handshake hash and the two
+//! nonces; the answerer's user accepts or declines. A man in the middle runs
+//! two handshakes, and on each side must fix its nonce (by commitment, or by
+//! sending it) before it learns the honest side's, so the two screens show
+//! the same digits by chance alone: one in a million. Comparing them is what
+//! catches it, as with Bluetooth's numeric comparison; a user who accepts
+//! without looking trusts the network on first use.
+//!
+//! **By code** (a version 1 device on either side): the device being added
+//! shows a fresh random code; the user types it on the device that asked.
+//! Both run SPAKE2 with the code as the password and the two device ids as
+//! identities, then prove the key with an HMAC over the Noise handshake
+//! hash. That hash covers both static keys, so a man in the middle, who runs
+//! two handshakes with different hashes, fails the confirmation unless they
+//! guessed the code, one guess per attempt; an eavesdropper learns nothing
+//! to test codes against. Each code serves one attempt.
 
 use hmac::{Hmac, Mac};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use spake2::{Ed25519Group, Identity as SpakeIdentity, Password, Spake2};
 
 use crate::identity::DeviceId;
@@ -61,6 +71,64 @@ impl PairCode {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+/// A confirmation pairing's random value, one per side per attempt.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Nonce([u8; 32]);
+
+impl std::fmt::Debug for Nonce {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Nonce(..)")
+    }
+}
+
+impl Nonce {
+    /// A nonce from the system's random source.
+    pub fn random() -> Result<Self, getrandom::Error> {
+        let mut bytes = [0; 32];
+        getrandom::fill(&mut bytes)?;
+        Ok(Self(bytes))
+    }
+
+    /// A nonce the other side sent: exactly 32 bytes.
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        <[u8; 32]>::try_from(bytes).ok().map(Self)
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    /// The commitment the answerer sends before it sees the dialler's
+    /// nonce.
+    pub fn commitment(&self) -> [u8; 32] {
+        let mut hash = Sha256::new();
+        hash.update(b"isthmus pair v2 commit");
+        hash.update(self.0);
+        hash.finalize().into()
+    }
+
+    /// Whether this nonce is the one `commitment` was made to.
+    pub fn opens(&self, commitment: &[u8]) -> bool {
+        self.commitment().as_slice() == commitment
+    }
+}
+
+/// The six digits both devices show in a confirmation pairing: from the
+/// connection's handshake hash and both nonces, dialler's first.
+pub fn comparison_code(handshake_hash: &[u8], dialler: &Nonce, answerer: &Nonce) -> PairCode {
+    let mut hash = Sha256::new();
+    hash.update(b"isthmus pair v2 compare");
+    hash.update(handshake_hash);
+    hash.update(dialler.0);
+    hash.update(answerer.0);
+    let digest: [u8; 32] = hash.finalize().into();
+    let mut first = [0; 8];
+    first.copy_from_slice(&digest[..8]);
+    // 2^64 is so much larger than 10^6 that the remainder's bias is
+    // invisible.
+    PairCode(format!("{:06}", u64::from_le_bytes(first) % 1_000_000))
 }
 
 /// Which side of a pairing this device is.
@@ -245,5 +313,31 @@ mod tests {
             let code = PairCode::random().unwrap();
             assert!(PairCode::parse(code.as_str()).is_some());
         }
+    }
+
+    /// Both sides of a confirmation pairing show the same digits; another
+    /// connection (a man in the middle's) or another nonce shows others.
+    #[test]
+    fn both_sides_show_the_same_comparison_code_and_a_relay_does_not() {
+        let dialler = Nonce::random().unwrap();
+        let answerer = Nonce::random().unwrap();
+        let code = comparison_code(b"hash", &dialler, &answerer);
+        assert_eq!(comparison_code(b"hash", &dialler, &answerer), code);
+        assert!(PairCode::parse(code.as_str()).is_some());
+        assert_ne!(comparison_code(b"other hash", &dialler, &answerer), code);
+        let other = Nonce::random().unwrap();
+        assert_ne!(comparison_code(b"hash", &dialler, &other), code);
+    }
+
+    /// A commitment opens with its own nonce and no other, and a nonce
+    /// must be 32 bytes.
+    #[test]
+    fn a_commitment_opens_only_with_its_nonce() {
+        let nonce = Nonce::random().unwrap();
+        let commitment = nonce.commitment();
+        assert!(nonce.opens(&commitment));
+        assert!(!Nonce::random().unwrap().opens(&commitment));
+        assert!(Nonce::from_bytes(&[0; 31]).is_none());
+        assert_eq!(Nonce::from_bytes(nonce.as_bytes()).unwrap(), nonce);
     }
 }

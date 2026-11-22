@@ -17,7 +17,7 @@ use super::{Core, SessionCommand};
 use crate::identity::DeviceId;
 use crate::path::PathKind;
 use crate::store::PeerOs;
-use crate::wire::{Message, SecureReader, SecureWriter};
+use crate::wire::{ClipboardText, MAX_CLIPBOARD_BLOB, Message, SecureReader, SecureWriter};
 
 /// How often each side pings.
 const PING_EVERY: Duration = Duration::from_secs(5);
@@ -33,6 +33,15 @@ pub(crate) struct Link {
     /// Where the peer listens.
     pub addr: SocketAddr,
     pub dialed_by_me: bool,
+    /// The protocol version the peer said it speaks.
+    pub version: u32,
+}
+
+/// What the reader task hands the loop.
+enum Incoming {
+    Message(Message),
+    /// The other device's clipboard text.
+    Clipboard(String),
 }
 
 /// Runs a session until it ends, if the service takes it.
@@ -58,7 +67,16 @@ pub(crate) async fn run<R, W>(
     let (message_tx, mut messages) = mpsc::channel(16);
     let reading = core.handle.spawn(async move {
         while let Ok(message) = reader.message().await {
-            if message_tx.send(message).await.is_err() {
+            let incoming = match message {
+                Message::Clipboard => {
+                    match reader.blob::<ClipboardText>(MAX_CLIPBOARD_BLOB).await {
+                        Ok(clipboard) => Incoming::Clipboard(clipboard.text),
+                        Err(_) => break,
+                    }
+                }
+                message => Incoming::Message(message),
+            };
+            if message_tx.send(incoming).await.is_err() {
                 break;
             }
         }
@@ -83,10 +101,25 @@ pub(crate) async fn run<R, W>(
                         break;
                     }
                 }
+                Some(SessionCommand::Clipboard(text)) => {
+                    let clipboard = ClipboardText { text: text.to_string() };
+                    if writer.send(&Message::Clipboard).await.is_err()
+                        || writer.send_blob(&clipboard).await.is_err()
+                    {
+                        break;
+                    }
+                }
             },
-            message = messages.recv() => {
-                let Some(message) = message else { break };
+            incoming = messages.recv() => {
+                let Some(incoming) = incoming else { break };
                 heard = Instant::now();
+                let message = match incoming {
+                    Incoming::Clipboard(text) => {
+                        core.clipboard_received(&peer, text);
+                        continue;
+                    }
+                    Incoming::Message(message) => message,
+                };
                 match message {
                     Message::Ping => {
                         if writer.send(&Message::Pong).await.is_err() {

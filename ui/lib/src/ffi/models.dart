@@ -1141,13 +1141,20 @@ enum PairRole {
 /// Where a pairing is (`PairStage`). Unknown reads as [connecting].
 enum PairStage {
   connecting,
+
+  /// With a version 1 device: the code to type (outgoing) or show
+  /// (incoming).
   code,
+
+  /// Both devices show the same code; the incoming side accepts.
+  confirm,
   verifying,
   paired,
   failed;
 
   static PairStage parse(Object? raw) => switch (raw) {
     'code' => PairStage.code,
+    'confirm' => PairStage.confirm,
     'verifying' => PairStage.verifying,
     'paired' => PairStage.paired,
     'failed' => PairStage.failed,
@@ -1160,6 +1167,7 @@ enum PairStage {
 /// Why a pairing failed (`PairFailure`).
 enum PairFailure {
   wrongCode,
+  declined,
   unreachable,
   busy,
   canceled,
@@ -1170,6 +1178,7 @@ enum PairFailure {
 
   static PairFailure parse(Object? raw) => switch (raw) {
     'wrongCode' => PairFailure.wrongCode,
+    'declined' => PairFailure.declined,
     'unreachable' => PairFailure.unreachable,
     'busy' => PairFailure.busy,
     'canceled' => PairFailure.canceled,
@@ -1377,6 +1386,61 @@ class PairingInfo {
 }
 
 /// One transfer (`TransferView`).
+/// Why a transfer is trying again (`RetryReason`). [other] is a reason this
+/// build cannot name.
+enum RetryReason {
+  stalled,
+  lost,
+  unreachable,
+  busy,
+  other;
+
+  static RetryReason parse(Object? raw) => switch (raw) {
+    'stalled' => RetryReason.stalled,
+    'lost' => RetryReason.lost,
+    'unreachable' => RetryReason.unreachable,
+    'busy' => RetryReason.busy,
+    _ => RetryReason.other,
+  };
+}
+
+/// A transfer's latest trouble (`RetryView`): what it retries after, or
+/// what its last attempt stopped on.
+class TransferRetry {
+  const TransferRetry({
+    required this.attempt,
+    required this.reason,
+    this.path,
+    this.interface,
+    this.detail,
+  });
+
+  static TransferRetry? fromJson(Object? raw) {
+    if (raw is! Map) return null;
+    final json = raw.cast<String, Object?>();
+    return TransferRetry(
+      attempt: _int(json['attempt'], 1),
+      reason: RetryReason.parse(json['reason']),
+      path: json['path'] == null ? null : PathKind.parse(json['path']),
+      interface: json['interface'] is String
+          ? json['interface'] as String
+          : null,
+      detail: json['detail'] is String ? json['detail'] as String : null,
+    );
+  }
+
+  /// How many times it has started again since bytes last moved.
+  final int attempt;
+  final RetryReason reason;
+
+  /// The path that failed, and its interface on this computer.
+  final PathKind? path;
+  final String? interface;
+
+  /// The system's own words, when it gave any.
+  final String? detail;
+}
+
 class TransferEntry {
   const TransferEntry({
     required this.id,
@@ -1390,7 +1454,9 @@ class TransferEntry {
     required this.bytesPerSecond,
     required this.state,
     this.path,
+    this.interface,
     this.failure,
+    this.retry,
     this.savedTo,
     this.startedAt = 0,
   });
@@ -1407,9 +1473,11 @@ class TransferEntry {
     bytesPerSecond: _int(json['bytesPerSecond'], 0),
     state: TransferState.parse(json['state']),
     path: json['path'] == null ? null : PathKind.parse(json['path']),
+    interface: json['interface'] is String ? json['interface'] as String : null,
     failure: json['failure'] == null
         ? null
         : TransferFailure.parse(json['failure']),
+    retry: TransferRetry.fromJson(json['retry']),
     savedTo: json['savedTo'] is String ? json['savedTo'] as String : null,
     startedAt: _int(json['startedAt'], 0),
   );
@@ -1429,9 +1497,13 @@ class TransferEntry {
   final int bytesPerSecond;
   final TransferState state;
 
-  /// The path the bytes take or last took.
+  /// The path the bytes take or last took, and its interface here.
   final PathKind? path;
+  final String? interface;
   final TransferFailure? failure;
+
+  /// Why it is retrying, or why its last attempt stopped.
+  final TransferRetry? retry;
 
   /// Received: the one item, or the folder several landed in.
   final String? savedTo;
@@ -1447,6 +1519,105 @@ class TransferEntry {
 /// Everything about file sharing at one moment (`LinkStatus`). Two reads
 /// compare equal when their JSON does, so a hint that changed nothing
 /// redraws nothing.
+/// Sharing the clipboard with paired devices (`ClipboardView`).
+class ClipboardInfo {
+  const ClipboardInfo({required this.enabled, this.last});
+
+  factory ClipboardInfo.fromJson(Map<String, Object?> json) => ClipboardInfo(
+    // On unless the library says otherwise, as `link.json` has it.
+    enabled: json['enabled'] != false,
+    last: json['last'] is Map
+        ? ClipboardEvent.fromJson(_map(json['last']))
+        : null,
+  );
+
+  final bool enabled;
+
+  /// The latest copy that crossed, either way.
+  final ClipboardEvent? last;
+}
+
+/// One copy that crossed to or from this computer (`ClipboardEvent`).
+class ClipboardEvent {
+  const ClipboardEvent({
+    required this.serial,
+    required this.direction,
+    required this.peers,
+    required this.chars,
+    required this.preview,
+  });
+
+  factory ClipboardEvent.fromJson(Map<String, Object?> json) => ClipboardEvent(
+    serial: _int(json['serial'], 0),
+    direction: TransferDirection.parse(json['direction']),
+    peers: [for (final peer in _list(json['peers'])) '$peer'],
+    chars: _int(json['chars'], 0),
+    preview: _string(json['preview']),
+  );
+
+  /// Rises with every copy.
+  final int serial;
+  final TransferDirection direction;
+
+  /// Received: the device it came from. Sent: those it went to.
+  final List<String> peers;
+  final int chars;
+
+  /// Its first line, shortened.
+  final String preview;
+}
+
+/// Whether Isthmus may read this computer's clipboard without asking
+/// (`clipboardAccess.access` in `link_status`). [ask] is macOS asking on
+/// each read.
+enum ClipboardAccess {
+  allowed,
+  ask,
+  denied;
+
+  static ClipboardAccess parse(Object? raw) => switch (raw) {
+    'allowed' => ClipboardAccess.allowed,
+    'ask' => ClipboardAccess.ask,
+    _ => ClipboardAccess.denied,
+  };
+}
+
+/// This computer's clipboard, as far as sharing it goes.
+class ClipboardState {
+  const ClipboardState({
+    required this.supported,
+    required this.access,
+    this.blocked = 0,
+  });
+
+  static const unknown = ClipboardState(
+    supported: false,
+    access: ClipboardAccess.allowed,
+  );
+
+  factory ClipboardState.fromJson(Map<String, Object?> json) => ClipboardState(
+    supported: json['supported'] == true,
+    access: ClipboardAccess.parse(json['access']),
+    blocked: _int(json['blocked'], 0),
+  );
+
+  final bool supported;
+  final ClipboardAccess access;
+
+  /// Copies made here that were not shared for want of permission.
+  final int blocked;
+
+  @override
+  bool operator ==(Object other) =>
+      other is ClipboardState &&
+      other.supported == supported &&
+      other.access == access &&
+      other.blocked == blocked;
+
+  @override
+  int get hashCode => Object.hash(supported, access, blocked);
+}
+
 class LinkStatus {
   LinkStatus._(this._json)
     : me = LinkMe.fromJson(_map(_json['me'])),
@@ -1461,7 +1632,11 @@ class LinkStatus {
       transfers = [
         for (final transfer in _list(_json['transfers']))
           TransferEntry.fromJson(_map(transfer)),
-      ];
+      ],
+      clipboard = ClipboardInfo.fromJson(_map(_json['clipboard'])),
+      clipboardAccess = _json['clipboardAccess'] is Map
+          ? ClipboardState.fromJson(_map(_json['clipboardAccess']))
+          : ClipboardState.unknown;
 
   factory LinkStatus.fromJson(Map<String, Object?> json) => LinkStatus._(json);
 
@@ -1477,6 +1652,12 @@ class LinkStatus {
 
   /// Newest first.
   final List<TransferEntry> transfers;
+
+  /// Sharing the clipboard with paired devices.
+  final ClipboardInfo clipboard;
+
+  /// What this computer's clipboard allows.
+  final ClipboardState clipboardAccess;
 
   List<PeerEntry> get paired => [
     for (final peer in peers)

@@ -24,6 +24,7 @@ pub struct LinkStatus {
     pub pairing: Option<PairingView>,
     /// Newest first.
     pub transfers: Vec<TransferView>,
+    pub clipboard: ClipboardView,
 }
 
 /// This device.
@@ -76,9 +77,11 @@ pub struct ConnectionView {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PairRole {
-    /// This device asked; the user types the code here.
+    /// This device asked: it waits for the other device to accept, or (with
+    /// a version 1 device) the user types the code here.
     Outgoing,
-    /// The other device asked; this one shows the code.
+    /// The other device asked: the user accepts here, or (with a version 1
+    /// device) this one shows the code.
     Incoming,
 }
 
@@ -88,9 +91,12 @@ pub enum PairRole {
 pub enum PairStage {
     /// Reaching the other device.
     Connecting,
-    /// Outgoing: waiting for the user to type the code shown on the other
-    /// device. Incoming: showing the code.
+    /// With a version 1 device. Outgoing: waiting for the user to type the
+    /// code shown on the other device. Incoming: showing the code.
     Code,
+    /// Both devices show the same code. Incoming: waiting for the user to
+    /// accept or decline. Outgoing: waiting for the other device's user.
+    Confirm,
     /// Checking the code.
     Verifying,
     Paired,
@@ -102,6 +108,8 @@ pub enum PairStage {
 #[serde(rename_all = "camelCase")]
 pub enum PairFailure {
     WrongCode,
+    /// The other device's user declined.
+    Declined,
     Unreachable,
     /// The other device is pairing with someone else, or was asked too
     /// often.
@@ -122,7 +130,8 @@ pub struct PairingView {
     pub peer_id: DeviceId,
     pub peer_name: String,
     pub peer_os: PeerOs,
-    /// Incoming only: the code to show.
+    /// The code to show: in a confirmation pairing on both devices, in a
+    /// pairing by code on the incoming one.
     pub code: Option<String>,
     pub stage: PairStage,
     pub failure: Option<PairFailure>,
@@ -181,6 +190,64 @@ pub enum TransferFailure {
     CanceledByPeer,
 }
 
+/// Sharing the clipboard with paired devices.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipboardView {
+    /// Whether this device shares its clipboard with paired devices: what
+    /// is copied here goes to them, and what they copy lands here.
+    pub enabled: bool,
+    /// The latest copy that crossed, either way.
+    pub last: Option<ClipboardEvent>,
+}
+
+/// One copy that crossed to or from this device.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipboardEvent {
+    /// Rises with every copy, so the window can tell a new one from the
+    /// last and say so once.
+    pub serial: u64,
+    pub direction: Direction,
+    /// Received: the device it came from. Sent: the devices it went to.
+    pub peers: Vec<String>,
+    /// How many characters it has.
+    pub chars: u64,
+    /// Its first line, shortened, for the notice.
+    pub preview: String,
+}
+
+/// Why a transfer is trying again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RetryReason {
+    /// Nothing moved for a while: the path went quiet (Wi-Fi dropped, the
+    /// cable was pulled, the other computer slept) without saying so.
+    Stalled,
+    /// The connection broke, and the system said why.
+    Lost,
+    /// No path to the other device answered.
+    Unreachable,
+    /// The other device was busy.
+    Busy,
+}
+
+/// A transfer's latest trouble, while it retries and after it fails: what
+/// the window shows instead of a bare "trying again".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetryView {
+    /// How many times it has started again since bytes last moved, from 1.
+    pub attempt: u32,
+    pub reason: RetryReason,
+    /// The path that failed, when one was in use.
+    pub path: Option<PathKind>,
+    /// Its interface on this computer (`en8`, `Ethernet 2`).
+    pub interface: Option<String>,
+    /// The system's own words, when it gave any.
+    pub detail: Option<String>,
+}
+
 /// One transfer, either way.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -199,7 +266,11 @@ pub struct TransferView {
     pub state: TransferState,
     /// The path the bytes take or last took.
     pub path: Option<PathKind>,
+    /// That path's interface on this computer.
+    pub interface: Option<String>,
     pub failure: Option<TransferFailure>,
+    /// Why it is retrying, or why its last attempt stopped.
+    pub retry: Option<RetryView>,
     /// Received: the one item, or the folder several landed in.
     pub saved_to: Option<String>,
     /// Seconds since 1970.
