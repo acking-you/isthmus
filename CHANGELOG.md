@@ -3,6 +3,8 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+
+## [0.1.3] - 2026-11-23
 - On Windows the app no longer freezes after it went to the notification area. A clipboard copy crossing while the window was hidden posted a notification through local_notifier, which called Flutter from Windows' notification threads when the notification went away, and the app stopped answering for good. Notifications now come from Isthmus's own notification-area icon, posted on the right thread, and CI runs the Windows app through the tray with a notification in between.
 - On Windows the notification-area menu closes when you click elsewhere.
 

@@ -8,7 +8,7 @@ resolver = "3"
 
 [workspace.package]
 # `version` must stay the first key here: release tooling reads it by position.
-version = "0.1.2"
+version = "0.1.3"
 authors = ["L_B__"]
 edition = "2024"
 rust-version = "1.100.0"
