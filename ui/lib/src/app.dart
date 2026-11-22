@@ -326,9 +326,19 @@ class _IsthmusAppState extends State<IsthmusApp> with WindowListener {
 
   void _startDesktop() {
     _lifecycle = AppLifecycleListener(
-      // Command-Q and the Dock's Quit ask here. Rust puts the system back in
-      // the Runner's applicationWillTerminate, which runs once this answers.
+      // Command-Q and the Dock's Quit ask here on a Mac; Rust puts the system
+      // back in the Runner's applicationWillTerminate, which runs once this
+      // answers. On Windows, Flutter asks here when the window is closed too,
+      // before window_manager's close reaches onWindowClose: that is a trip
+      // to the notification area, never a quit, so it is cancelled with
+      // nothing torn down. Answering "exit" there released the tray and the
+      // library while preventClose kept the process alive, and the app no
+      // longer answered anything. Only the tray's Quit (`_quit`) quits.
       onExitRequested: () async {
+        if (!Platform.isMacOS && _quitting == null) {
+          await _hideWindow();
+          return AppExitResponse.cancel;
+        }
         _prepareToQuit();
         return AppExitResponse.exit;
       },

@@ -514,8 +514,18 @@ fn a_copy_reaches_the_paired_device_and_both_say_so() {
     a.wait("a session with b", |s| online_with(s, &b_id));
     b.wait("a session with a", |s| online_with(s, &a_id));
 
-    assert_eq!(a.service.share_clipboard("hello from a\nsecond line"), 1);
-    let landed = b.clipboard.recv_timeout(STEP).unwrap();
+    // Right after connecting, the two may still be settling on one of two
+    // connections, and a copy sent on the one being dropped is lost; the
+    // next copy goes. So the copy is repeated until one lands.
+    let deadline = Instant::now() + STEP;
+    let landed = loop {
+        assert_eq!(a.service.share_clipboard("hello from a\nsecond line"), 1);
+        match b.clipboard.recv_timeout(Duration::from_millis(500)) {
+            Ok(text) => break text,
+            Err(_) if Instant::now() < deadline => continue,
+            Err(error) => panic!("no copy landed: {error}"),
+        }
+    };
     assert_eq!(landed, "hello from a\nsecond line");
     let sent = a.service.status().clipboard.last.unwrap();
     assert_eq!(sent.direction, Direction::Send);

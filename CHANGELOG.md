@@ -3,6 +3,7 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+- On Windows the app answers again after its window is closed to the notification area; 0.1.3's notification fix did not reach this. Closing the window also makes Flutter ask whether to exit the app, and Isthmus answered as if quitting: it let go of the notification-area icon and the Rust library, while the window, kept from closing, stayed behind with nothing left to answer clicks. Closing the window now only hides it, and only Quit in the menu quits. The Windows test in CI now clicks the tray as Windows does, which is what let this through before.
 
 ## [0.1.3] - 2026-11-23
 - On Windows the app no longer freezes after it went to the notification area. A clipboard copy crossing while the window was hidden posted a notification through local_notifier, which called Flutter from Windows' notification threads when the notification went away, and the app stopped answering for good. Notifications now come from Isthmus's own notification-area icon, posted on the right thread, and CI runs the Windows app through the tray with a notification in between.
