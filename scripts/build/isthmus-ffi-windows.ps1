@@ -10,11 +10,14 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot "../..") | Select-Object -First 1
 $ffiLib = "isthmus_ffi.dll"
 # Not $profile: PowerShell already names the profile script that.
 $buildProfile = if ($env:PROFILE) { $env:PROFILE } else { "release" }
-$cargoProfile = if ($buildProfile -eq "release") { @("--release") } else { @() }
+# Built up with +=: an `if` that yields a one-element array hands back the
+# bare string, and splatting a string passes its characters one by one.
+$cargoArgs = @("build", "-p", "isthmus-ffi")
+if ($buildProfile -eq "release") { $cargoArgs += "--release" }
 
 Push-Location $root
 try {
-  cargo build -p isthmus-ffi @cargoProfile
+  & cargo @cargoArgs
   if ($LASTEXITCODE -ne 0) { throw "FFI build failed" }
 
   $built = Join-Path $root "target/$buildProfile/$ffiLib"
