@@ -187,5 +187,11 @@ Run what your change touches and say what you could not run.
 - A `vX.Y.Z` tag, the workspace version and `ui/pubspec.yaml` must match, and
   the pubspec's build number only rises. Never reuse a tag or republish a
   version.
+- Pushing the tag runs `.github/workflows/release.yml`: a Developer
+  ID-signed, notarized DMG per macOS architecture
+  (`scripts/release/macos_package.py`) and a portable Windows zip, with the
+  notes from that version's CHANGELOG section. Run it by hand with
+  `verify_only` to check signing without publishing. The signing secrets
+  and variables it names live on the repository; never in the tree.
 - `version` stays the first key of `[workspace.package]`.
 - Never commit secrets or signing identities.

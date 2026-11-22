@@ -1,0 +1,232 @@
+name: Release
+
+# A `vX.Y.Z` tag builds and publishes the release, after pb-mapper's
+# release-ui workflow: a Developer ID-signed, notarized and stapled DMG per
+# macOS architecture (one native runner each, so each app carries a
+# single-arch FFI library) and a portable Windows zip, with the notes taken
+# from that version's CHANGELOG section. Run by hand with `verify_only`, it
+# builds, signs and notarizes without publishing.
+#
+# Signing needs the repository secrets MACOS_CERTIFICATE_P12_BASE64,
+# MACOS_CERTIFICATE_PASSWORD and APPLE_NOTARY_PRIVATE_KEY, and the variables
+# MACOS_SIGNING_IDENTITY, APPLE_TEAM_ID, APPLE_NOTARY_KEY_ID and
+# APPLE_NOTARY_ISSUER_ID.
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      verify_only:
+        description: "Build, sign and notarize without publishing a release"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.100.0"
+  FLUTTER_VERSION: "3.50.1"
+  PUBLISH: ${{ github.event_name == 'push' && !inputs.verify_only }}
+
+jobs:
+  notes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag, Cargo.toml and the pubspec agree
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          cargo_version="$(awk -F'"' '/^\[workspace.package\]/{p=1} p && /^version/{print $2; exit}' Cargo.toml)"
+          pubspec_version="$(awk '/^version:/{print $2; exit}' ui/pubspec.yaml)"
+          echo "tag=$tag cargo=$cargo_version pubspec=$pubspec_version"
+          test "$tag" = "$cargo_version"
+          test "$tag" = "${pubspec_version%%+*}"
+      - name: Release notes from the changelog
+        run: |
+          set -euo pipefail
+          version="$(awk -F'"' '/^\[workspace.package\]/{p=1} p && /^version/{print $2; exit}' Cargo.toml)"
+          awk -v ver="$version" '
+            $0 ~ "^## \\[" ver "\\]" {capture=1; next}
+            capture && /^## \[/ {exit}
+            capture {print}
+          ' CHANGELOG.md > changelog_section.md
+          {
+            echo "## Downloads"
+            echo
+            echo "- **macOS 13 or later**: \`Isthmus-macos-arm64.dmg\` (Apple silicon) or \`Isthmus-macos-x86_64.dmg\` (Intel), signed with Developer ID and notarized. Open the DMG, drag Isthmus to Applications, and allow Accessibility when it asks."
+            echo "- **Windows 10 or later**: \`Isthmus-windows-x86_64.zip\`, portable. Unzip anywhere and run \`Isthmus.exe\`; allow it through the firewall on private **and** public networks (a direct cable counts as public). The Windows app shares files; the keyboard and mouse habits are a Mac's."
+            echo
+            echo "## Changes"
+            echo
+            if [ -s changelog_section.md ]; then
+              cat changelog_section.md
+            else
+              echo "_No changelog section for ${version}._"
+            fi
+          } > release_notes.md
+          cat release_notes.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release_notes.md
+
+  macos:
+    needs: notes
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+      - name: Signing is configured
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_NOTARY_PRIVATE_KEY: ${{ secrets.APPLE_NOTARY_PRIVATE_KEY }}
+          MACOS_SIGNING_IDENTITY: ${{ vars.MACOS_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          APPLE_NOTARY_KEY_ID: ${{ vars.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ vars.APPLE_NOTARY_ISSUER_ID }}
+        run: |
+          python3 - <<'PY'
+          import os
+          required = ('MACOS_CERTIFICATE_P12_BASE64', 'MACOS_CERTIFICATE_PASSWORD',
+                      'APPLE_NOTARY_PRIVATE_KEY', 'MACOS_SIGNING_IDENTITY', 'APPLE_TEAM_ID',
+                      'APPLE_NOTARY_KEY_ID', 'APPLE_NOTARY_ISSUER_ID')
+          missing = [key for key in required if not os.environ.get(key)]
+          if missing:
+              raise SystemExit('Missing signing configuration: ' + ', '.join(missing))
+          PY
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+      - name: Build the FFI library
+        run: make build-isthmus-ffi-macos
+      - name: Build the app
+        run: make build-ui-macos-release-no-ffi
+      - name: The app and its library are ${{ matrix.arch }} only
+        run: |
+          set -euo pipefail
+          app=ui/build/macos/Build/Products/Release/Isthmus.app
+          for bin in "$app/Contents/MacOS/Isthmus" "$app/Contents/Frameworks/libisthmus_ffi.dylib"; do
+            got="$(lipo -archs "$bin")"
+            echo "$bin: $got"
+            test "$got" = "${{ matrix.arch }}"
+          done
+          cmp ui/native/macos/libisthmus_ffi.dylib "$app/Contents/Frameworks/libisthmus_ffi.dylib" \
+            || echo "the embedded library differs from the staged one only by its signature"
+      - name: Sign, notarize and verify
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_NOTARY_PRIVATE_KEY: ${{ secrets.APPLE_NOTARY_PRIVATE_KEY }}
+          MACOS_SIGNING_IDENTITY: ${{ vars.MACOS_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          APPLE_NOTARY_KEY_ID: ${{ vars.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ vars.APPLE_NOTARY_ISSUER_ID }}
+        run: |
+          python3 scripts/release/macos_package.py \
+            --app ui/build/macos/Build/Products/Release/Isthmus.app \
+            --arch '${{ matrix.arch }}' \
+            --output 'ui/dist/Isthmus-macos-${{ matrix.arch }}.dmg'
+      - name: Remove the temporary signing keychain
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, shutil, subprocess
+          for directory in pathlib.Path(os.environ['RUNNER_TEMP']).glob('isthmus-signing-*'):
+              keychain = directory / 'signing.keychain-db'
+              if keychain.exists():
+                  subprocess.run(['security', 'delete-keychain', str(keychain)], check=False)
+              shutil.rmtree(directory, ignore_errors=True)
+          PY
+      - name: Keep the verification logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}-verification
+          path: ui/dist/*-verification/
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}-dmg
+          path: ui/dist/Isthmus-macos-${{ matrix.arch }}.dmg
+          if-no-files-found: error
+      - name: Publish
+        if: env.PUBLISH == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Isthmus ${{ github.ref_name }}
+          body_path: release_notes.md
+          files: ui/dist/Isthmus-macos-${{ matrix.arch }}.dmg
+
+  windows:
+    needs: notes
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
+        run: rustup toolchain install $env:RUST_TOOLCHAIN --profile minimal
+      - name: Build and stage the FFI library
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build/isthmus-ffi-windows.ps1
+      - name: Build the app
+        working-directory: ui
+        run: |
+          flutter pub get
+          flutter build windows --release
+      - name: Package the portable zip
+        run: |
+          $release = "ui/build/windows/x64/runner/Release"
+          foreach ($name in @("Isthmus.exe", "isthmus_ffi.dll")) {
+            if (-not (Test-Path (Join-Path $release $name))) { throw "Missing $name in $release" }
+          }
+          $staged = (Get-FileHash "ui/native/windows/x64/isthmus_ffi.dll").Hash
+          $bundled = (Get-FileHash (Join-Path $release "isthmus_ffi.dll")).Hash
+          if ($staged -ne $bundled) { throw "The bundled isthmus_ffi.dll is not the one just built" }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item -Recurse $release dist/Isthmus
+          Compress-Archive -Path dist/Isthmus -DestinationPath dist/Isthmus-windows-x86_64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64-zip
+          path: dist/Isthmus-windows-x86_64.zip
+          if-no-files-found: error
+      - name: Publish
+        if: env.PUBLISH == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Isthmus ${{ github.ref_name }}
+          body_path: release_notes.md
+          files: dist/Isthmus-windows-x86_64.zip
