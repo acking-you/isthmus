@@ -1,6 +1,11 @@
 /// The Windows app, run for real (CI's `windows-app` job): closing the
 /// window puts it in the notification area, and the tray's click brings it
-/// back drawing and answering. 0.1.2's app stopped responding at that point.
+/// back drawing and answering. Up to 0.1.3 the app stopped responding at
+/// that point: closing the window also asked Flutter to exit the app, and
+/// the app's answer released the tray and the library.
+///
+/// Tray clicks arrive over tray_manager's platform channel, as the plugin's
+/// native side sends them, so a tray listener that was dropped is caught.
 ///
 /// Windows only: on a Mac the tray's click opens its menu instead.
 ///
@@ -9,14 +14,15 @@
 /// ```
 library;
 
+import 'dart:async';
 import 'dart:io' show Platform;
 
 import 'package:flutter/scheduler.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:isthmus_ui/src/app.dart';
 import 'package:isthmus_ui/src/common/system_notice.dart';
-import 'package:isthmus_ui/src/common/tray/tray_service.dart';
 import 'package:isthmus_ui/src/shell/app_prefs.dart';
 import 'package:isthmus_ui/src/shell/window_chrome.dart';
 import 'package:material_ui/material_ui.dart';
@@ -35,6 +41,20 @@ Future<void> _until(
     if (DateTime.now().isAfter(deadline)) fail('timed out waiting for $what');
     await Future<void>.delayed(const Duration(milliseconds: 100));
   }
+}
+
+/// A left click on the tray icon, delivered as tray_manager's native side
+/// delivers it on Windows: a method call on its channel.
+Future<void> _trayClick() {
+  final answered = Completer<void>();
+  ServicesBinding.instance.channelBuffers.push(
+    'tray_manager',
+    const StandardMethodCodec().encodeMethodCall(
+      const MethodCall('onTrayIconMouseDown'),
+    ),
+    (_) => answered.complete(),
+  );
+  return answered.future.timeout(const Duration(seconds: 5));
 }
 
 /// A frame drawn within a few seconds, or a failure saying frames stopped.
@@ -62,7 +82,11 @@ void main() {
   ) async {
     await windowManager.ensureInitialized();
     final ready = windowManager.waitUntilReadyToShow(isthmusWindowOptions);
-    final prefs = AppPrefs(persist: false)..autoCheckUpdates = false;
+    // Onboarded, so the launch shows the window once (the runner's first
+    // frame) and never again behind the test's back.
+    final prefs = AppPrefs(persist: false)
+      ..autoCheckUpdates = false
+      ..onboarded = true;
     await tester.pumpWidget(
       IsthmusApp(
         api: FakeIsthmusApi(),
@@ -91,7 +115,7 @@ void main() {
     await Future<void>.delayed(const Duration(seconds: 12));
 
     // What Windows sends for a left click on the tray icon.
-    TrayService.instance.onTrayIconMouseDown();
+    await _trayClick();
     await _until('the window to come back', windowManager.isVisible);
     await _drawsAFrame(tester, 'after coming back from the tray');
 
@@ -106,7 +130,7 @@ void main() {
     await _until('the window to hide again', () async {
       return !await windowManager.isVisible();
     });
-    TrayService.instance.onTrayIconMouseDown();
+    await _trayClick();
     await _until('the window to come back again', windowManager.isVisible);
     await _drawsAFrame(tester, 'after the second return');
   }, skip: !Platform.isWindows);
