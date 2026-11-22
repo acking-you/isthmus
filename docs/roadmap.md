@@ -1,19 +1,19 @@
 # Roadmap
 
-**Nothing on this page is built.** Isthmus today is the keyboard and mouse
-([keyboard-and-mouse.md](keyboard-and-mouse.md)). This page is the plan for
-what comes after it, in the order it is meant to come: what each step does,
-the decisions already made, and the questions still open. A step gets its
-own page when work on it starts, and reaches the
-[changelog](../CHANGELOG.md) only when it ships. [AGENTS.md](../AGENTS.md)
-has the rules every step keeps; [architecture.md](architecture.md) maps the
-code they extend.
+Isthmus today is the keyboard and mouse
+([keyboard-and-mouse.md](keyboard-and-mouse.md)) and file sharing between
+computers ([file-sharing.md](file-sharing.md)). This page is the plan for
+the rest, in the order it is meant to come: what each step does, the
+decisions already made, and the questions still open. A step gets its own
+page when work on it starts, and reaches the [changelog](../CHANGELOG.md)
+only when it ships. [AGENTS.md](../AGENTS.md) has the rules every step
+keeps; [architecture.md](architecture.md) maps the code they extend.
 
 | Step | What it gives | Builds on | Status |
 | --- | --- | --- | --- |
-| [1. Finding devices](#1-finding-devices-on-the-local-network) | Other Isthmus computers on the local network, listed | – | planned |
-| [2. Pairing](#2-pairing-with-a-short-code) | A trusted link between two of them, made once with a short code | 1 | planned |
-| [3. File sharing](#3-file-sharing-between-paired-devices) | Files sent from one paired device to another | 2 | planned |
+| [1. Finding devices](#1-finding-devices-on-the-local-network) | Other Isthmus computers on the local network, listed | – | built |
+| [2. Pairing](#2-pairing-with-a-short-code) | A trusted link between two of them, made once with a short code | 1 | built |
+| [3. File sharing](#3-file-sharing-between-paired-devices) | Files sent from one paired device to another | 2 | built |
 | [4. Display alignment](#4-display-alignment) | A display that looks and moves the same from both systems | – | planned |
 | [5. Keyboard and mouse across devices](#5-keyboard-and-mouse-across-devices) | One keyboard and mouse for two computers side by side | 2, 4 | planned |
 
@@ -21,20 +21,21 @@ code they extend.
 
 Each step is a sibling crate of `isthmus-input` on `isthmus-core`, with its
 own `platform/<os>/` and its own ops of the one FFI export,
-`isthmus_call_json`. Crate names below are placeholders.
+`isthmus_call_json`. Discovery, pairing and file sharing turned out to be
+one crate, `isthmus-link`: a transfer is a connection of the same protocol.
+The display crate's name is a placeholder.
 
 ```text
-isthmus-cli ─┐   ┌─► isthmus-input    built: keyboard and mouse ───┐
-             ├───┼─► isthmus-link     planned: discovery, pairing  ├─► isthmus-core
-isthmus-ffi ─┘   ├─► isthmus-share    planned: files, on link      │
-                 └─► isthmus-display  planned: display alignment ──┘
+isthmus-cli ─┐   ┌─► isthmus-input    built: keyboard and mouse ─────────────┐
+             ├───┼─► isthmus-link     built: discovery, pairing, files ──────├─► isthmus-core
+isthmus-ffi ─┘   └─► isthmus-display  planned: display alignment ────────────┘
 ```
 
 What carries over from the keyboard and mouse:
 
 - **Dependencies still point one way.** A later crate may use an earlier
-  one (file sharing uses pairing), never the reverse, and nothing below
-  `isthmus-input` learns about the network.
+  one (keyboard and mouse across devices will use `isthmus-link`), never
+  the reverse, and nothing below them learns about the network.
 - **Every system change is journalled.** A display setting or a default
   Isthmus writes is recorded before it is written and put back on quit,
   pause and after a crash, never over a value someone else set, as HID
@@ -47,64 +48,57 @@ What carries over from the keyboard and mouse:
 
 ## 1. Finding devices on the local network
 
-**Plan.** Each running Isthmus announces itself with Bonjour (DNS-SD) as
-`_isthmus._tcp` on the local network and browses for the others. The app
-lists what it finds: a name the user chose for the computer, its system and
-whether it is paired. The TXT record carries a protocol version and a
-random device id, never the user's account name.
+**Built** in `isthmus-link` ([file-sharing.md](file-sharing.md)). Each
+running Isthmus announces itself with mDNS as `_isthmus._tcp` on every
+interface, a bare cable included, and browses for the others; the TXT
+record carries the device id, the name the user chose, the system and the
+protocol version, never the account name. Discovery only finds: whoever
+answers must still prove the id's key, and only a pinned key is trusted.
 
-**Decided.** Discovery only finds; it grants nothing. Every connection after
-it is made through pairing (step 2), so a device on the same network that
-answers to `_isthmus._tcp` learns no more than that Isthmus runs here.
+**Decided along the way.** The browse restarts and the device announces
+again every 30 seconds, since mdns-sd backs its queries off towards an hour
+and a query lost before macOS granted Local Network access would otherwise
+hide a device for long. A paired device is also dialled at the address it
+was last reached at, so it reconnects on networks that block multicast. The
+first Windows peer came with this step rather than later: the Windows build
+of the app has the Devices and Settings pages.
 
-**Open.**
-
-- Since macOS 15, macOS asks for Local Network access before an app
-  browses or advertises; the Info.plist needs the usage text and the
-  service type, and the app should explain the prompt before it appears.
-- Networks that block multicast (guest Wi-Fi, some offices) find nothing. A
-  device can still be added by address, which needs its own design.
-- A Windows peer needs a Windows program; the protocol is not Mac-only, but
-  the first peer is another Mac.
+**Open.** Adding a device by address by hand, for a network that blocks
+multicast before the first pairing.
 
 ## 2. Pairing with a short code
 
-**Plan.** Two devices pair once. One shows a short code, the user types it
-on the other, and the code runs a password-authenticated key exchange
-(PAKE). The exchange swaps each device's long-term certificate, and every
-later connection is TLS 1.3 with both certificates pinned, without a code.
-Unpairing deletes the pin on both sides; a device that was unpaired while
-away is refused when it returns.
+**Built.** The device being added shows a six-digit code and the user types
+it on the device that asked. The code runs SPAKE2 (the RustCrypto `spake2`
+crate), confirmed with an HMAC over the Noise handshake hash, so an
+eavesdropper learns nothing to test codes against and a man in the middle
+gets one guess per attempt. Unpairing deletes the pin on both sides; a
+device unpaired while away is refused when it returns and forgets its side.
 
-**Why a PAKE.** A short code is too weak to protect a key on its own: an
-eavesdropper could try every code offline. With a PAKE, someone who watches
-the exchange learns nothing to test codes against, and someone who joins it
-gets one guess per attempt. A wrong code ends the attempt.
-
-**Decided.** The code is shown, never sent. A pairing proves only that the
-two devices are the ones the user looked at; it says nothing about the
-network, which is why every later connection is encrypted and pinned. Each
-device's private key stays on that device.
-
-**Open.** Which PAKE (SPAKE2 and CPace are the candidates) and which crate,
-chosen for review history over features; where the private key lives (the
-login Keychain is the first choice); how long a code stays valid.
+**Changed from the plan.** Connections use the Noise protocol (XX, X25519,
+ChaCha20-Poly1305, BLAKE2s) instead of TLS 1.3 with pinned certificates:
+the static key is the identity with no certificate around it, and every
+crate is pure Rust, so the Windows build type-checks from a Mac. The private
+key lives in `link-identity.json` in the data directory, readable by the
+user alone, rather than in the Keychain, the same on both systems. A code
+lasts two minutes and serves one attempt.
 
 ## 3. File sharing between paired devices
 
-**Plan.** Send a file or folder to a paired device from the app or by
-dropping it on the device's entry. It arrives in the receiver's Downloads
-folder, after the receiver accepts it or straight away for a device the user
-trusts that way. Transfers go over the pinned connection from step 2, are
-checked by hash at the end, and resume after a dropped connection.
+**Built.** Files and folders dropped on the window are sent to a paired
+device with one click and land in its Downloads folder. Paired devices are
+trusted to send without a prompt. Each transfer runs over the best path at
+the moment (a direct cable before the shared network) and resumes from the
+bytes the receiver holds when its connection drops, over the next path.
 
-**Decided.** Only paired devices take part, and nothing passes through a
-server outside the local network. It is sending, not syncing: no folder is
-kept in step.
+**Changed from the plan.** Integrity in transit comes from the
+authenticated encryption of every frame; there is no hash of the whole file
+at the end. A file whose length changes while it is sent fails the
+transfer instead.
 
-**Open.** Whether the clipboard is a later part of this step (copy on one
-computer, paste on the other), and how a transfer shows its progress in the
-menu bar.
+**Open.** The clipboard (copy on one computer, paste on the other); a
+progress line in the menu bar; choosing the receive folder in the app
+(today it is `receiveDir` in `link.json`).
 
 ## 4. Display alignment
 

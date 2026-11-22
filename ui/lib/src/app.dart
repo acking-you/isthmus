@@ -8,10 +8,12 @@ import 'package:flutter/services.dart' show ServicesBinding;
 import 'package:material_ui/material_ui.dart';
 import 'package:isthmus_ui/l10n/app_localizations.dart';
 import 'package:isthmus_ui/src/common/app_toast.dart';
+import 'package:isthmus_ui/src/common/file_drop.dart';
 import 'package:isthmus_ui/src/common/permission_card.dart';
 import 'package:isthmus_ui/src/common/tray/tray_service.dart';
 import 'package:isthmus_ui/src/ffi/isthmus_api.dart';
 import 'package:isthmus_ui/src/ffi/isthmus_service.dart';
+import 'package:isthmus_ui/src/pages/devices_page.dart';
 import 'package:isthmus_ui/src/pages/keyboard_page.dart';
 import 'package:isthmus_ui/src/pages/mouse_page.dart';
 import 'package:isthmus_ui/src/pages/overview_page.dart';
@@ -34,7 +36,7 @@ class IsthmusApp extends StatefulWidget {
     required this.api,
     this.changes,
     this.prefs,
-    this.initialPage = AppPage.overview,
+    this.initialPage,
     this.pollInterval = const Duration(seconds: 2),
     this.windowReady,
   });
@@ -46,7 +48,9 @@ class IsthmusApp extends StatefulWidget {
 
   /// Defaults to preferences kept in `shared_preferences`.
   final AppPrefs? prefs;
-  final AppPage initialPage;
+
+  /// Defaults to [AppPage.home].
+  final AppPage? initialPage;
 
   /// How often the status is read while the window shows.
   final Duration? pollInterval;
@@ -69,7 +73,7 @@ class _IsthmusAppState extends State<IsthmusApp> with WindowListener {
     onFailure: _onFailure,
     onPermissionRequested: _desktop ? _showPermissionCard : null,
   );
-  late AppPage _page = widget.initialPage;
+  late AppPage _page = widget.initialPage ?? AppPage.home;
   AppLifecycleListener? _lifecycle;
   Future<void>? _quitting;
   bool _relaunching = false;
@@ -81,6 +85,8 @@ class _IsthmusAppState extends State<IsthmusApp> with WindowListener {
     super.initState();
     _prefs.addListener(_onPrefs);
     _store.addListener(_refreshTray);
+    _store.link.onReceived = _onReceived;
+    _store.link.onPairingRequest = (_) => _onPairingRequest();
     if (_desktop) {
       _store.addListener(_relaunchIfMacOSAsks);
       _store.addListener(_hidePermissionCardOnceGranted);
@@ -203,8 +209,38 @@ class _IsthmusAppState extends State<IsthmusApp> with WindowListener {
       StoreAction.openSettingsPane => l10n.failOpenPane,
       StoreAction.loginItem => l10n.failLoginItem,
       StoreAction.runningApps => l10n.failRunningApps,
+      StoreAction.linkPair => l10n.failLinkPair,
+      StoreAction.linkUnpair => l10n.failLinkUnpair,
+      StoreAction.linkSend => l10n.failLinkSend,
+      StoreAction.linkTransfer => l10n.failLinkTransfer,
+      StoreAction.linkRename => l10n.failLinkRename,
+      StoreAction.linkReveal => l10n.failLinkReveal,
     };
     showToast(null, title, kind: ToastKind.error, description: error.message);
+  }
+
+  /// Files arrived: say so, wherever the window is.
+  void _onReceived(TransferEntry transfer) {
+    final l10n = lookupAppLocalizations(_prefs.activeLocale);
+    showToast(
+      null,
+      l10n.toastReceived(transfer.name, transfer.peerName),
+      kind: ToastKind.success,
+    );
+  }
+
+  /// Another device asked to pair: its code is on the Devices page, so the
+  /// window comes up there, even from the menu bar.
+  void _onPairingRequest() {
+    _go(AppPage.devices);
+    if (_desktop) unawaited(_showWindow());
+  }
+
+  /// Files dropped anywhere on the window wait on the Devices page for a
+  /// device to send them to.
+  void _onDrop(List<String> paths) {
+    _store.link.stage(paths);
+    _go(AppPage.devices);
   }
 
   // --- The menu bar life.
@@ -230,6 +266,16 @@ class _IsthmusAppState extends State<IsthmusApp> with WindowListener {
         onOpen: () => unawaited(_showWindow()),
         onToggle: (on) => unawaited(_store.setEnabled(on)),
         onQuit: () => unawaited(_quit()),
+        onKeyboardMode: (id, windows) {
+          final device = _store.devices.where((d) => d.id == id).firstOrNull;
+          if (device == null) return;
+          unawaited(
+            _store.setKeyboardLayout(
+              device,
+              windows ? LayoutChoice.pc : LayoutChoice.mac,
+            ),
+          );
+        },
       );
     } catch (error) {
       debugPrint('The menu bar item could not start: $error');
@@ -241,8 +287,19 @@ class _IsthmusAppState extends State<IsthmusApp> with WindowListener {
   }
 
   /// The tray is not a widget, so its words come from the active locale.
+  /// A PC has no Windows habits to switch, so its menu is open and quit.
   TrayView _trayView() {
     final l10n = lookupAppLocalizations(_prefs.activeLocale);
+    if (!hasInputPages) {
+      return (
+        status: l10n.appTitle,
+        toggleLabel: '',
+        enabled: false,
+        openLabel: l10n.trayOpen,
+        quitLabel: l10n.trayQuit,
+        keyboards: const [],
+      );
+    }
     final enabled = _store.settings.enabled;
     final status = _store.anotherInstance
         ? l10n.statusAnotherInstance
@@ -257,6 +314,15 @@ class _IsthmusAppState extends State<IsthmusApp> with WindowListener {
       enabled: enabled,
       openLabel: l10n.trayOpen,
       quitLabel: l10n.trayQuit,
+      keyboards: [
+        for (final device in _store.devicesOf(DeviceKind.keyboard))
+          if (device.hasModeSwitch && device.connected)
+            (
+              id: device.id,
+              label: l10n.trayKeyboardWindowsMode(device.name),
+              windows: device.layout == Layout.pc,
+            ),
+      ],
     );
   }
 
@@ -308,6 +374,15 @@ class _IsthmusAppState extends State<IsthmusApp> with WindowListener {
   /// runs `applicationWillTerminate`, where Rust puts the keyboard and mouse
   /// back.
   Future<void> _quit() => _quitting ??= () async {
+    // Windows has no quit hook into Rust, so file sharing says goodbye on
+    // the network here; a Mac's Runner does it in applicationWillTerminate.
+    if (!Platform.isMacOS) {
+      try {
+        await widget.api.shutdown().timeout(const Duration(seconds: 2));
+      } catch (error) {
+        debugPrint('Isthmus did not shut down cleanly: $error');
+      }
+    }
     _prepareToQuit();
     await ServicesBinding.instance.exitApplication(AppExitType.required);
   }();
@@ -359,15 +434,20 @@ class _IsthmusAppState extends State<IsthmusApp> with WindowListener {
         prefs: _prefs,
         page: _page,
         go: _go,
-        child: AppShell(
-          page: _page,
-          onSelect: _go,
-          child: switch (_page) {
-            AppPage.overview => const OverviewPage(),
-            AppPage.keyboard => const KeyboardPage(),
-            AppPage.mouse => const MousePage(),
-            AppPage.settings => const SettingsPage(),
-          },
+        child: FileDropZone(
+          enabled: _desktop,
+          onDrop: _onDrop,
+          child: AppShell(
+            page: _page,
+            onSelect: _go,
+            child: switch (_page) {
+              AppPage.overview => const OverviewPage(),
+              AppPage.keyboard => const KeyboardPage(),
+              AppPage.mouse => const MousePage(),
+              AppPage.devices => const DevicesPage(),
+              AppPage.settings => const SettingsPage(),
+            },
+          ),
         ),
       ),
     );

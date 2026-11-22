@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show rootBundle;
@@ -29,18 +30,21 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   _registerFontLicenses();
   await windowManager.ensureInitialized();
-  // The native title bar is hidden so the app draws one continuous surface;
-  // the traffic lights stay in the rail's corner. The window starts hidden
-  // (MainFlutterWindow.swift) and is configured here without being shown:
-  // the app decides whether a launch needs it.
+  // On a Mac the native title bar is hidden so the app draws one continuous
+  // surface; the traffic lights stay in the rail's corner. The window starts
+  // hidden (MainFlutterWindow.swift) and is configured here without being
+  // shown: the app decides whether a launch needs it. Windows keeps its own
+  // title bar, whose buttons a hidden one would take away.
   final windowReady = windowManager.waitUntilReadyToShow(
-    const WindowOptions(
-      size: Size(980, 680),
-      minimumSize: Size(760, 560),
+    WindowOptions(
+      size: const Size(980, 680),
+      minimumSize: const Size(760, 560),
       center: true,
       backgroundColor: Colors.transparent,
       title: 'Isthmus',
-      titleBarStyle: TitleBarStyle.hidden,
+      titleBarStyle: Platform.isMacOS
+          ? TitleBarStyle.hidden
+          : TitleBarStyle.normal,
       windowButtonVisibility: true,
     ),
   );

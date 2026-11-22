@@ -116,7 +116,15 @@ enum JournalReport {
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
 enum AccessibilityReport {
+    #[cfg_attr(
+        not(target_os = "macos"),
+        expect(dead_code, reason = "only macOS can ask")
+    )]
     Granted,
+    #[cfg_attr(
+        not(target_os = "macos"),
+        expect(dead_code, reason = "only macOS can ask")
+    )]
     NotGranted,
     /// Not macOS.
     #[cfg_attr(

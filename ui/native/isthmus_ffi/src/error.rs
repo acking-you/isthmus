@@ -12,6 +12,7 @@
 use std::fmt;
 
 use isthmus_input::Error as ServiceError;
+use isthmus_link::Error as LinkError;
 use serde::Serialize;
 
 /// What kind of failure this is. Dart treats a code it does not know as
@@ -34,6 +35,10 @@ pub enum ErrorCode {
     /// A local file could not be read or written, or holds something that
     /// cannot be read back (the settings file, the data directory).
     Io,
+    /// Another pairing is in progress; try again when it ends.
+    Busy,
+    /// The network or the other device cannot be reached right now.
+    Unavailable,
     /// Anything with no more specific answer, a caught panic included.
     Internal,
 }
@@ -80,6 +85,43 @@ impl CtlError {
         let code = service_code(&error);
         tracing::warn!(?code, error = %chain(&error), "an Isthmus operation failed");
         Self::new(code, error.to_string())
+    }
+
+    /// File sharing's failure as the window sees it, like
+    /// [`Self::from_service`].
+    pub fn from_link(error: LinkError) -> Self {
+        let code = link_code(&error);
+        tracing::warn!(?code, error = %chain(&error), "a file sharing operation failed");
+        Self::new(code, error.to_string())
+    }
+}
+
+/// The code for each of file sharing's failures. A request naming a device,
+/// a transfer or a code that does not fit is `INVALID_ARGUMENT`; the network
+/// not answering is `UNAVAILABLE`, which the window shows as "try again".
+pub fn link_code(error: &LinkError) -> ErrorCode {
+    match error {
+        LinkError::ReadState { .. }
+        | LinkError::ParseState { .. }
+        | LinkError::WriteState { .. }
+        | LinkError::Lock { .. }
+        | LinkError::Source { .. }
+        | LinkError::Reveal { .. } => ErrorCode::Io,
+        LinkError::Key { .. } | LinkError::Runtime { .. } => ErrorCode::Internal,
+        LinkError::AnotherInstance => ErrorCode::AnotherInstance,
+        LinkError::Listen { .. } | LinkError::Discovery { .. } | LinkError::PeerOffline { .. } => {
+            ErrorCode::Unavailable
+        }
+        LinkError::UnknownPeer { .. }
+        | LinkError::NotPaired { .. }
+        | LinkError::InvalidCode
+        | LinkError::NoPairing
+        | LinkError::NothingToSend
+        | LinkError::TooManyFiles { .. }
+        | LinkError::UnknownTransfer { .. }
+        | LinkError::InvalidName { .. } => ErrorCode::InvalidArgument,
+        LinkError::PairingBusy => ErrorCode::Busy,
+        LinkError::ShutDown => ErrorCode::NotRunning,
     }
 }
 
@@ -205,6 +247,39 @@ mod tests {
             let ctl = CtlError::from_service(error);
             assert_eq!(ctl.code(), code, "{text}");
             assert_eq!(ctl.to_string(), text, "the sentence is the service's own");
+        }
+    }
+
+    /// File sharing's failures reach Dart with the codes the window
+    /// branches on: a bad request, a busy pairing, an absent peer.
+    #[test]
+    fn link_failures_map_to_their_codes() {
+        let cases = [
+            (LinkError::InvalidCode, ErrorCode::InvalidArgument),
+            (
+                LinkError::NotPaired { id: "x".into() },
+                ErrorCode::InvalidArgument,
+            ),
+            (LinkError::PairingBusy, ErrorCode::Busy),
+            (
+                LinkError::PeerOffline { id: "x".into() },
+                ErrorCode::Unavailable,
+            ),
+            (LinkError::AnotherInstance, ErrorCode::AnotherInstance),
+            (
+                LinkError::Source {
+                    path: PathBuf::from("/x"),
+                    source: io_error(),
+                },
+                ErrorCode::Io,
+            ),
+            (LinkError::ShutDown, ErrorCode::NotRunning),
+        ];
+        for (error, code) in cases {
+            let text = error.to_string();
+            let ctl = CtlError::from_link(error);
+            assert_eq!(ctl.code(), code, "{text}");
+            assert_eq!(ctl.to_string(), text);
         }
     }
 

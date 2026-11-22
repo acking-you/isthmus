@@ -30,6 +30,12 @@
 	<true/>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.utilities</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Isthmus finds your other computers on this network and sends files between them. / Isthmus 在这个网络里寻找你的其他电脑，并在它们之间传文件。</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_isthmus._tcp</string>
+	</array>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 </dict>

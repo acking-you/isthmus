@@ -6,5 +6,6 @@ target
 .DS_Store
 # The staged FFI library: the build script copies it here for Xcode to embed.
 ui/native/macos/libisthmus_ffi.*
+ui/native/windows/
 # Packaging output.
 ui/dist/

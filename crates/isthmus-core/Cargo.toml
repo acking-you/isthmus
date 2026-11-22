@@ -12,5 +12,8 @@ publish = false
 workspace = true
 
 [dependencies]
-libc.workspace = true
 snafu.workspace = true
+
+# `kern.bootsessionuuid` (boot.rs) is read on macOS alone.
+[target.'cfg(target_os = "macos")'.dependencies]
+libc.workspace = true

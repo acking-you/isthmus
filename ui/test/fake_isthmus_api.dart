@@ -56,6 +56,7 @@ Map<String, Object?> deviceJson(
   bool viaKvm = false,
   String detectedLayout = 'pc',
   String confidence = 'medium',
+  bool hasModeSwitch = false,
 }) => {
   'id': id,
   'kind': kind,
@@ -69,9 +70,81 @@ Map<String, Object?> deviceJson(
   'detectedLayout': detectedLayout,
   'layoutConfidence': confidence,
   'viaKvm': viaKvm,
+  'hasModeSwitch': hasModeSwitch,
   'connected': connected,
   'layout': detectedLayout,
   'applied': true,
+};
+
+/// File sharing's snapshot as Rust would send it.
+Map<String, Object?> linkJson({
+  String name = 'Studio Mac',
+  List<Map<String, Object?>> peers = const [],
+  Map<String, Object?>? pairing,
+  List<Map<String, Object?>> transfers = const [],
+}) => {
+  'me': {
+    'id': 'fedcba9876543210',
+    'name': name,
+    'os': 'macos',
+    'port': 47821,
+    'paths': [
+      {'interface': 'en8', 'address': '169.254.149.93', 'kind': 'direct'},
+      {'interface': 'en1', 'address': '192.168.21.37', 'kind': 'lan'},
+    ],
+  },
+  'receiveDir': '/Users/someone/Downloads',
+  'peers': peers,
+  'pairing': pairing,
+  'transfers': transfers,
+};
+
+/// Another device as Rust would send it.
+Map<String, Object?> peerJson(
+  String id,
+  String name, {
+  bool paired = true,
+  bool online = true,
+  String os = 'windows',
+  String? connection = 'direct',
+  List<String> routes = const ['direct', 'lan'],
+}) => {
+  'id': id,
+  'name': name,
+  'os': os,
+  'paired': paired,
+  'online': online,
+  'connection': paired && online && connection != null
+      ? {'kind': connection, 'interface': 'en8', 'address': '169.254.1.2'}
+      : null,
+  'routes': routes,
+};
+
+/// A transfer as Rust would send it.
+Map<String, Object?> transferJson(
+  String id, {
+  String direction = 'send',
+  String state = 'running',
+  String name = 'Project',
+  int total = 2000000,
+  int done = 500000,
+  String? failure,
+  String? savedTo,
+}) => {
+  'id': id,
+  'peerId': '0123456789abcdef',
+  'peerName': 'Desk PC',
+  'direction': direction,
+  'name': name,
+  'files': 3,
+  'totalBytes': total,
+  'doneBytes': done,
+  'bytesPerSecond': 1500000,
+  'state': state,
+  'path': 'direct',
+  'failure': failure,
+  'savedTo': savedTo,
+  'startedAt': 0,
 };
 
 /// An [IsthmusApiClient] that answers from memory instead of over FFI.
@@ -84,7 +157,9 @@ class FakeIsthmusApi implements IsthmusApiClient {
     List<Map<String, Object?>> devices = const [],
     List<Map<String, Object?>> runningApps = const [],
     this.login = LoginItem.disabled,
-  }) : current = Status(status ?? statusJson()),
+    Map<String, Object?>? link,
+  }) : link = link ?? linkJson(),
+       current = Status(status ?? statusJson()),
        stored = Settings(settings),
        devicesNow = [for (final d in devices) DeviceEntry.fromJson(d)],
        apps = [for (final a in runningApps) FrontApp.fromJson(a)];
@@ -101,6 +176,9 @@ class FakeIsthmusApi implements IsthmusApiClient {
   /// What `running_apps` answers.
   List<FrontApp> apps;
   LoginItem login;
+
+  /// What `link_status` answers, as JSON a test may edit.
+  Map<String, Object?> link;
 
   /// Every call, in order, so a test asserts what the view asked for rather
   /// than only what it drew. Ops with arguments carry them: `preset_apply
@@ -207,6 +285,21 @@ class FakeIsthmusApi implements IsthmusApiClient {
     return stored;
   }
 
+  /// The keyboard whose mapping is lifted now, if any.
+  String? probing;
+
+  @override
+  Future<void> beginLayoutProbe(String deviceId) async {
+    _check('layout_probe_begin $deviceId');
+    probing = deviceId;
+  }
+
+  @override
+  Future<void> endLayoutProbe() async {
+    _check('layout_probe_end');
+    probing = null;
+  }
+
   @override
   Future<LoginItem> loginItem() async {
     _check('login_item_get');
@@ -224,11 +317,101 @@ class FakeIsthmusApi implements IsthmusApiClient {
   Future<void> shutdown() async {
     _check('shutdown');
   }
+
+  @override
+  Future<LinkStatus> linkStatus() async {
+    _check('link_status');
+    return LinkStatus.fromJson(link);
+  }
+
+  @override
+  Future<void> linkPair(String peerId) async => _check('link_pair $peerId');
+
+  @override
+  Future<void> linkPairCode(String code) async =>
+      _check('link_pair_code $code');
+
+  @override
+  Future<void> linkPairCancel() async => _check('link_pair_cancel');
+
+  @override
+  Future<void> linkUnpair(String peerId) async => _check('link_unpair $peerId');
+
+  @override
+  Future<String> linkSend(String peerId, List<String> paths) async {
+    _check('link_send $peerId ${paths.join('|')}');
+    return 'sent-1';
+  }
+
+  @override
+  Future<void> linkTransferCancel(String id) async =>
+      _check('link_transfer_cancel $id');
+
+  @override
+  Future<void> linkTransfersClear() async => _check('link_transfers_clear');
+
+  @override
+  Future<LinkStatus> linkRename(String name) async {
+    _check('link_rename $name');
+    link = {
+      ...link,
+      'me': {...(link['me'] as Map<String, Object?>), 'name': name},
+    };
+    return LinkStatus.fromJson(link);
+  }
+
+  @override
+  Future<void> linkReveal([String? id]) async =>
+      _check('link_reveal ${id ?? '-'}');
 }
 
 /// A Mac with something on every card: a missing permission, Secure Input,
 /// issues, keyboards through a KVM, a mouse of its own, a trackpad, a rule.
 FakeIsthmusApi busyApi() => FakeIsthmusApi(
+  link: linkJson(
+    peers: [
+      peerJson('0123456789abcdef', 'Desk PC'),
+      peerJson(
+        '2222333344445555',
+        'MacBook Air',
+        os: 'macos',
+        online: false,
+        routes: const [],
+      ),
+      peerJson(
+        '6666777788889999',
+        'Studio PC',
+        paired: false,
+        routes: const ['lan'],
+      ),
+    ],
+    pairing: {
+      'role': 'incoming',
+      'peerId': '6666777788889999',
+      'peerName': 'Studio PC',
+      'peerOs': 'windows',
+      'code': '482913',
+      'stage': 'code',
+    },
+    transfers: [
+      transferJson(
+        't1',
+        name: 'Quarterly report.pdf',
+        total: 48000000,
+        done: 31000000,
+      ),
+      transferJson(
+        't2',
+        direction: 'receive',
+        state: 'done',
+        name: 'Holiday photos',
+        total: 820000000,
+        done: 820000000,
+        savedTo: '/Users/someone/Downloads/Holiday photos',
+      ),
+      transferJson('t3', state: 'retrying', name: 'build.zip'),
+    ],
+  ),
   status: statusJson(
     accessibility: 'denied',
     secureInput: true,

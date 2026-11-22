@@ -38,7 +38,7 @@ use crate::engine::SystemHotkeys;
 use crate::error::Error;
 use crate::hidmap::HidProfile;
 use crate::journal::Journal;
-use crate::settings::{LayoutChoice, Preset, PresetTarget, Settings};
+use crate::settings::{KeyboardStyle, LayoutChoice, Preset, PresetTarget, Settings};
 use crate::status::{
     Change, DeviceEntry, HidBackend, HidStatus, Issue, LoginItem, PermissionKind, PermissionState,
     Permissions, SettingsPane, Status, TapState,
@@ -63,6 +63,31 @@ pub struct InputService {
 
 /// Whether this build can apply anything at all.
 const SUPPORTED: bool = cfg!(target_os = "macos");
+
+/// The longest a layout probe leaves a keyboard unmapped, should the app
+/// never end it (closed mid-question, say).
+pub const LAYOUT_PROBE_LIMIT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// `settings` with keyboard `id` in Mac style, which gets no mapping: what
+/// the HID side applies while that keyboard is probed.
+#[cfg_attr(
+    all(not(target_os = "macos"), not(test)),
+    expect(dead_code, reason = "no mapping to lift off macOS")
+)]
+fn with_keyboard_unmapped(mut settings: Settings, id: &str) -> Settings {
+    match settings.keyboard.devices.iter_mut().find(|d| d.id == id) {
+        Some(device) => device.style = KeyboardStyle::Mac,
+        None => settings
+            .keyboard
+            .devices
+            .push(crate::settings::KeyboardDeviceSettings {
+                id: id.to_owned(),
+                style: KeyboardStyle::Mac,
+                ..Default::default()
+            }),
+    }
+    settings
+}
 
 /// What the HID thread last made true, for the status and the device
 /// lists.
@@ -134,8 +159,17 @@ struct State {
         expect(dead_code, reason = "only the macOS tap posts hotkeys")
     )]
     hotkeys: SystemHotkeys,
+    /// The user has an input method, so a Shift tap has somewhere to go.
+    #[cfg_attr(
+        not(target_os = "macos"),
+        expect(dead_code, reason = "only the macOS tap switches input sources")
+    )]
+    input_method: bool,
     /// [`InputService::shutdown`] ran.
     stopped: bool,
+    /// A keyboard whose mapping is lifted while the app asks the user to
+    /// press the key beside the space bar, and when that began.
+    layout_probe: Option<(String, std::time::Instant)>,
 }
 
 impl State {
@@ -154,7 +188,9 @@ impl State {
             relaunch_needed: false,
             session_active: true,
             hotkeys: SystemHotkeys::default(),
+            input_method: false,
             stopped: false,
+            layout_probe: None,
         }
     }
 
@@ -353,6 +389,7 @@ fn remembered(id: &str, name: &str, kind: DeviceKind, layout: Layout) -> Device 
         detected_layout: layout,
         layout_confidence: Confidence::Low,
         via_kvm: false,
+        has_mode_switch: false,
     }
 }
 
@@ -716,6 +753,28 @@ impl InputService {
         self.status()
     }
 
+    /// Lifts `device_id`'s key mapping for at most [`LAYOUT_PROBE_LIMIT`],
+    /// so the key beside the space bar arrives as the keyboard sends it:
+    /// Command in Mac mode, Option (Alt) in Windows mode. The app asks the
+    /// user to press it and saves the layout that follows; firmware mode
+    /// switches tell macOS nothing, so this one key press is how a
+    /// keyboard's mode is found. Starting a probe ends any other.
+    pub fn begin_layout_probe(&self, device_id: &str) -> Result<(), Error> {
+        self.inner.check_writable()?;
+        self.inner.state.lock().layout_probe =
+            Some((device_id.to_owned(), std::time::Instant::now()));
+        self.inner.apply();
+        Ok(())
+    }
+
+    /// Puts the probed keyboard's mapping back. Harmless with no probe.
+    pub fn end_layout_probe(&self) {
+        let ended = self.inner.state.lock().layout_probe.take().is_some();
+        if ended {
+            self.inner.apply();
+        }
+    }
+
     /// Opens a System Settings pane the UI links to.
     pub fn open_settings_pane(&self, pane: SettingsPane) -> Result<(), Error> {
         runtime::open_url(pane_url(pane))
@@ -780,7 +839,9 @@ mod runtime {
     use crate::platform::macos::permissions::{self, RawAccess, RetryStage, TapAction};
     use crate::platform::macos::tap::TapThread;
     use crate::platform::macos::workspace::{self, Observers, WorkspaceEvent};
-    use crate::platform::macos::{TapShared, TapSnapshot, TapStates, hotkeys, login, secure};
+    use crate::platform::macos::{
+        TapShared, TapSnapshot, TapStates, hotkeys, input_sources, login, secure,
+    };
     use crate::settings::{KeyboardStyle, MouseProfile, Settings};
     use crate::status::{Change, LoginItem, PermissionState, TapState};
 
@@ -877,6 +938,7 @@ mod runtime {
         app: AppProfile,
         hid_profile: HidProfile,
         hotkeys: SystemHotkeys,
+        input_method: bool,
         devices: &[Device],
     ) -> TapSnapshot {
         let any_windows_keyboard = devices
@@ -902,6 +964,7 @@ mod runtime {
             hid_profile,
             groups: settings.keyboard.groups,
             hotkeys,
+            shift_switches_input: settings.keyboard.shift_switches_input && input_method,
             mouse_default: settings.mouse.defaults,
             mouse_by_sender,
         }
@@ -916,6 +979,7 @@ mod runtime {
             state.permission = permissions::assess(None, initial_access);
             state.secure_input = secure::enabled();
             state.hotkeys = hotkeys::load();
+            state.input_method = input_sources::has_input_method();
         }
         spawn_coordinator(shared, initial_access);
         shared.ensure_tap();
@@ -1048,6 +1112,7 @@ mod runtime {
             let now = Instant::now();
             if now >= next_secure {
                 shared.poll_secure_input();
+                shared.expire_layout_probe();
                 next_secure = now + SECURE_POLL;
             }
             if now >= next_permission {
@@ -1069,9 +1134,13 @@ mod runtime {
     impl Shared {
         /// What the HID side should make true now.
         fn desired(&self, state: &State) -> Desired {
+            let settings = match &state.layout_probe {
+                Some((id, _)) => super::with_keyboard_unmapped(state.settings.clone(), id),
+                None => state.settings.clone(),
+            };
             Desired {
                 active: state.active(self.owner),
-                settings: state.settings.clone(),
+                settings,
                 hid_profile: state.hid_profile,
                 display_scale: crate::platform::macos::display::main_display_scale(),
             }
@@ -1099,6 +1168,7 @@ mod runtime {
                 app,
                 state.hid_profile,
                 state.hotkeys,
+                state.input_method,
                 &state.hid.devices,
             );
             if let Some(hid) = self.runtime.hid.get() {
@@ -1297,6 +1367,25 @@ mod runtime {
                 )
         }
 
+        /// Ends a layout probe the app left running past its limit.
+        fn expire_layout_probe(&self) {
+            let expired = {
+                let mut state = self.state.lock();
+                let late = state
+                    .layout_probe
+                    .as_ref()
+                    .is_some_and(|(_, since)| since.elapsed() >= super::LAYOUT_PROBE_LIMIT);
+                if late {
+                    state.layout_probe = None;
+                }
+                late
+            };
+            if expired {
+                warn!("a layout probe ran past its limit; mapping the keyboard again");
+                self.apply();
+            }
+        }
+
         /// Has the utility thread read Accessibility now: the UI is up, or
         /// the user just asked for the grant.
         pub(super) fn check_permission_soon(&self) {
@@ -1400,12 +1489,18 @@ mod runtime {
             permissions::carried(previous, reading)
         }
 
-        /// Re-reads the user's system hotkeys; the tap posts what they bind.
+        /// Re-reads the user's system hotkeys (the tap posts what they
+        /// bind) and whether they have an input method (the Shift tap's
+        /// condition).
         fn reload_hotkeys(&self) {
             let hotkeys = hotkeys::load();
+            let input_method = input_sources::has_input_method();
             let changed = {
                 let mut state = self.state.lock();
-                std::mem::replace(&mut state.hotkeys, hotkeys) != hotkeys
+                let hotkeys_changed = std::mem::replace(&mut state.hotkeys, hotkeys) != hotkeys;
+                let method_changed =
+                    std::mem::replace(&mut state.input_method, input_method) != input_method;
+                hotkeys_changed || method_changed
             };
             if changed {
                 self.refresh();
@@ -1515,6 +1610,7 @@ mod runtime {
                 detected_layout: Layout::Pc,
                 layout_confidence: Confidence::Medium,
                 via_kvm: false,
+                has_mode_switch: false,
             }
         }
 
@@ -1525,6 +1621,7 @@ mod runtime {
                 AppProfile::default(),
                 HidProfile::Windows,
                 SystemHotkeys::default(),
+                true,
                 devices,
             )
         }
@@ -1655,8 +1752,6 @@ mod runtime {
     pub(super) fn running_apps() -> Vec<(String, String, i32)> {
         Vec::new()
     }
-
-    /// No permission to ask for.
 
     /// No System Settings.
     pub(super) fn open_url(_url: &str) -> Result<(), Error> {
@@ -1971,6 +2066,7 @@ mod tests {
             detected_layout: layout,
             layout_confidence: Confidence::Medium,
             via_kvm: false,
+            has_mode_switch: false,
         }
     }
 
@@ -2043,5 +2139,45 @@ mod tests {
         let mut away = running_state();
         away.session_active = false;
         assert!(!away.active(true));
+    }
+
+    /// Probing a keyboard puts only that keyboard in Mac style (no
+    /// mapping), whether or not it had an entry, and leaves the saved
+    /// settings and every other keyboard as they were.
+    #[test]
+    fn a_probed_keyboard_alone_goes_unmapped() {
+        let mut settings = Settings::default();
+        settings
+            .keyboard
+            .devices
+            .push(crate::settings::KeyboardDeviceSettings {
+                id: "keyboard:usb:05ac:024f:loc=00112000".into(),
+                style: KeyboardStyle::Windows,
+                layout: LayoutChoice::Mac,
+                ..Default::default()
+            });
+        let probed =
+            super::with_keyboard_unmapped(settings.clone(), "keyboard:usb:05ac:024f:loc=00112000");
+        assert_eq!(
+            probed
+                .keyboard
+                .style_of("keyboard:usb:05ac:024f:loc=00112000"),
+            KeyboardStyle::Mac
+        );
+        assert_eq!(
+            probed
+                .keyboard
+                .device("keyboard:usb:05ac:024f:loc=00112000")
+                .map(|d| d.layout),
+            Some(LayoutChoice::Mac)
+        );
+        assert_eq!(
+            probed.keyboard.style_of("keyboard:usb:1a86:e010"),
+            KeyboardStyle::Windows
+        );
+
+        let fresh = super::with_keyboard_unmapped(Settings::default(), "keyboard:new");
+        assert_eq!(fresh.keyboard.style_of("keyboard:new"), KeyboardStyle::Mac);
+        assert_eq!(settings.keyboard.devices.len(), 1);
     }
 }

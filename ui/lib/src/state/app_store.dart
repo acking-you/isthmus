@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:isthmus_ui/src/ffi/isthmus_api.dart';
 import 'package:isthmus_ui/src/ffi/isthmus_service.dart';
+import 'package:isthmus_ui/src/state/link_store.dart';
 
 /// What the store was doing when a call failed, so the app can say so in the
 /// user's language without the store knowing any words.
@@ -14,6 +15,12 @@ enum StoreAction {
   openSettingsPane,
   loginItem,
   runningApps,
+  linkPair,
+  linkUnpair,
+  linkSend,
+  linkTransfer,
+  linkRename,
+  linkReveal,
 }
 
 /// One settings change waiting its turn: how it looks right away, and how it
@@ -76,6 +83,12 @@ class AppStore extends ChangeNotifier {
   /// Told once System Settings is open at the Accessibility pane; the app
   /// shows its drag-to-authorize card there.
   void Function()? onPermissionRequested;
+
+  /// File sharing: its own snapshot and calls, fed by the same hints.
+  late final LinkStore link = LinkStore(
+    api: api,
+    onFailure: (action, error) => onFailure?.call(action, error),
+  );
 
   /// The last status Rust answered.
   Status status = Status.initial;
@@ -166,6 +179,9 @@ class AppStore extends ChangeNotifier {
       ]);
       ok = ok && reads.every((read) => read);
       if (_disposed) return;
+      // Not part of `ok`: file sharing that did not start says so on its
+      // own page and never holds up the keyboard and mouse.
+      unawaited(link.refresh());
       loaded = true;
       _notify();
       if (!_firstRead.isCompleted) _firstRead.complete(ok);
@@ -181,7 +197,10 @@ class AppStore extends ChangeNotifier {
     if (_visible == visible) return;
     _visible = visible;
     _syncPolling();
-    if (visible && _started) unawaited(refreshStatus());
+    if (visible && _started) {
+      unawaited(refreshStatus());
+      unawaited(link.refresh());
+    }
   }
 
   void _syncPolling() {
@@ -217,6 +236,7 @@ class AppStore extends ChangeNotifier {
       unawaited(_loadStatus());
     }
     if (all || kinds.contains(ChangeKind.devices)) unawaited(_loadDevices());
+    if (all || kinds.contains(ChangeKind.link)) unawaited(link.refresh());
     // After the writes in flight, so a hint caused by one of them never
     // replaces the screen with an older copy.
     if (all || kinds.contains(ChangeKind.settings)) {
@@ -363,6 +383,34 @@ class AppStore extends ChangeNotifier {
     }
   }
 
+  /// Lift [deviceId]'s mapping so the app can read which key it sends
+  /// beside the space bar. True once lifted.
+  Future<bool> beginLayoutProbe(String deviceId) async {
+    try {
+      await api.beginLayoutProbe(deviceId);
+      return true;
+    } catch (error) {
+      onFailure?.call(StoreAction.saveSettings, _asCallException(error));
+      return false;
+    }
+  }
+
+  /// Map the probed keyboard again; best effort (Rust ends a forgotten
+  /// probe by itself).
+  Future<void> endLayoutProbe() async {
+    try {
+      await api.endLayoutProbe();
+    } catch (_) {}
+  }
+
+  /// Set a keyboard's layout, which for a keyboard with a mode switch is
+  /// the mode it is in.
+  Future<bool> setKeyboardLayout(DeviceEntry device, LayoutChoice layout) =>
+      update(
+        (s) =>
+            s.withKeyboardDevice(device.id, name: device.name, layout: layout),
+      );
+
   Future<void> openSettingsPane(SettingsPane pane) async {
     try {
       await api.openSettingsPane(pane);
@@ -410,6 +458,7 @@ class AppStore extends ChangeNotifier {
     _poll?.cancel();
     _debounce?.cancel();
     unawaited(_subscription?.cancel());
+    link.dispose();
     super.dispose();
   }
 }

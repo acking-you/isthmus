@@ -17,7 +17,7 @@ const double kRailWidth = 196;
 const double _rowHeight = 38;
 const double _rowGap = 2;
 
-/// The four pages as a rail on the backdrop: the selection is a pane of glass
+/// The pages as a rail on the backdrop: the selection is a pane of glass
 /// that glides, with a little spring, to the chosen row. At its foot, the one
 /// fact every page depends on: whether Windows habits are on.
 class NavRail extends StatelessWidget {
@@ -30,7 +30,8 @@ class NavRail extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final step = MediaQuery.textScalerOf(context).scale(_rowHeight);
-    final index = AppPage.values.indexOf(page);
+    final pages = AppPage.available;
+    final index = pages.indexOf(page).clamp(0, pages.length - 1);
     return Material(
       type: MaterialType.transparency,
       child: Column(
@@ -85,7 +86,7 @@ class NavRail extends StatelessWidget {
                 ),
                 Column(
                   children: [
-                    for (final entry in AppPage.values) ...[
+                    for (final entry in pages) ...[
                       SizedBox(
                         height: step,
                         child: _RailRow(
@@ -103,10 +104,12 @@ class NavRail extends StatelessWidget {
             ),
           ),
           const Expanded(child: WindowDragArea()),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(10, 0, 10, 12),
-            child: _StatusFoot(onTap: () => onSelect(AppPage.overview)),
-          ),
+          // Windows habits are a Mac's; a PC's rail has no switch to show.
+          if (hasInputPages)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(10, 0, 10, 12),
+              child: _StatusFoot(onTap: () => onSelect(AppPage.overview)),
+            ),
         ],
       ),
     );

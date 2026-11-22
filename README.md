@@ -78,6 +78,13 @@ and every change it makes to macOS is put back when it stops.
   takes the screen and, after a crash, at the next start. A KVM switch looks
   like a replug, and Isthmus applies the settings again
   ([putting it back](docs/keyboard-and-mouse.md#system-changes-and-putting-them-back)).
+- **Files between your computers** — Isthmus on another Mac or PC shows up
+  by itself; pair once with a six-digit code and the two reconnect on their
+  own from then on. Drop files on the window and click Send beside a
+  device. A cable straight between the two (a USB Ethernet adapter on your
+  KVM, say) is used first and the shared network second, and a transfer
+  that loses one carries on over the other
+  ([file sharing](docs/file-sharing.md)).
 
 ## How it works
 
@@ -161,23 +168,30 @@ hidutil property --set '{"UserKeyMapping":[]}'   # clear every key mapping by ha
 Unplugging and replugging a keyboard or mouse, or restarting the Mac, also
 clears everything Isthmus set.
 
+**On a PC**, the Windows build has the file sharing (with Rust, Flutter and
+Visual Studio's C++ tools, in PowerShell):
+
+```bash
+make build-ui-windows-release   # builds isthmus_ffi.dll, then Isthmus.exe
+```
+
 Every setting and shortcut: [keyboard and mouse](docs/keyboard-and-mouse.md)
+· pairing and sending files: [file sharing](docs/file-sharing.md)
 · building and running the app: [ui/README.md](ui/README.md) · what changed:
 [changelog](CHANGELOG.md).
 
 ## What comes next
 
-The keyboard and mouse are the first part. Isthmus is meant to grow into
-finding your other computers on the local network, pairing with a short
-code, sharing files between paired devices, aligning how a display looks on
-both systems, and one keyboard and mouse across them. None of it is built;
-[the roadmap](docs/roadmap.md) describes each step and what it needs.
+The keyboard, the mouse and file sharing are built. Next: aligning how a
+display looks on both systems, and one keyboard and mouse across two
+computers side by side; [the roadmap](docs/roadmap.md) describes each step
+and what it needs.
 
 ## Documentation
 
 | | |
 | --- | --- |
-| **Use** | [Keyboard and mouse](docs/keyboard-and-mouse.md) · [Changelog](CHANGELOG.md) |
+| **Use** | [Keyboard and mouse](docs/keyboard-and-mouse.md) · [File sharing](docs/file-sharing.md) · [Changelog](CHANGELOG.md) |
 | **App** | [Building and running it](ui/README.md) |
 | **Project** | [Architecture](docs/architecture.md) · [Roadmap](docs/roadmap.md) · [Rust engineering guide](docs/rust-engineering-guide.md) |
 
@@ -187,8 +201,9 @@ All pages: [docs index](docs/README.md).
 
 `crates/` holds the Rust workspace (`isthmus-core` for the data directory,
 state files and the instance lock; `isthmus-input` for the keyboard and
-mouse service; `isthmus-cli` for the `isthmus` command), `ui/` the Flutter
-app with its C ABI and the macOS Runner, and `scripts/` the build steps. The
+mouse service; `isthmus-link` for finding, pairing and sending files;
+`isthmus-cli` for the `isthmus` command), `ui/` the Flutter app with its C
+ABI and its macOS and Windows runners, and `scripts/` the build steps. The
 rules a change must keep are in [AGENTS.md](AGENTS.md).
 
 ```bash

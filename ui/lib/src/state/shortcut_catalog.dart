@@ -248,6 +248,11 @@ final List<ShortcutCard> shortcutCatalog = [
     title: (l) => l.groupInputSourceTitle,
     summary: (l) => l.groupInputSourceSummary,
     examples: [
+      ShortcutExample(
+        ['Shift'],
+        mac: ['⌃', 'Space'],
+        does: (l) => l.scShiftSwitchesInput,
+      ),
       ShortcutExample(['Win', 'Space'], does: (l) => l.scNextInputSource),
     ],
   ),

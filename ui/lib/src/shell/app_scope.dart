@@ -1,20 +1,38 @@
+import 'package:flutter/foundation.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:isthmus_ui/src/common/l10n_extension.dart';
 import 'package:isthmus_ui/src/shell/app_prefs.dart';
 import 'package:isthmus_ui/src/state/app_store.dart';
 import 'package:isthmus_ui/src/theme/app_icons.dart';
 
-/// The four places the app has. Everything else opens over one of them.
+/// Whether this system has the keyboard and mouse pages: a Mac does, a PC
+/// does not. Keyed on [defaultTargetPlatform], like the window chrome, so
+/// `flutter test` (forced to Android) sees every page on any host.
+bool get hasInputPages =>
+    defaultTargetPlatform != TargetPlatform.windows &&
+    defaultTargetPlatform != TargetPlatform.linux;
+
+/// The places the app has. Everything else opens over one of them.
 enum AppPage {
   overview,
   keyboard,
   mouse,
+  devices,
   settings;
+
+  /// The pages this system shows: the keyboard and mouse are a Mac's, so a
+  /// PC has file sharing and the settings alone.
+  static List<AppPage> get available =>
+      hasInputPages ? values : const [AppPage.devices, AppPage.settings];
+
+  /// Where the window opens.
+  static AppPage get home => hasInputPages ? AppPage.overview : AppPage.devices;
 
   IconData get icon => switch (this) {
     AppPage.overview => AppIcons.overview,
     AppPage.keyboard => AppIcons.keyboard,
     AppPage.mouse => AppIcons.mouse,
+    AppPage.devices => AppIcons.devices,
     AppPage.settings => AppIcons.settings,
   };
 
@@ -25,6 +43,7 @@ enum AppPage {
       AppPage.overview => l10n.navOverview,
       AppPage.keyboard => l10n.navKeyboard,
       AppPage.mouse => l10n.navMouse,
+      AppPage.devices => l10n.navDevices,
       AppPage.settings => l10n.navSettings,
     };
   }

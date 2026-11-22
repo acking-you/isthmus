@@ -1505,6 +1505,7 @@ mod tests {
             detected_layout: Layout::Mac,
             layout_confidence: crate::device::Confidence::Medium,
             via_kvm: false,
+            has_mode_switch: false,
         };
         assert_eq!(
             device_issues(&[device], &seen),

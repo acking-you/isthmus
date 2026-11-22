@@ -103,6 +103,10 @@ pub struct KeyboardSettings {
     /// Per-keyboard choices, keyed by [`crate::device::DeviceId`].
     pub devices: Vec<KeyboardDeviceSettings>,
     pub groups: ShortcutGroups,
+    /// Shift pressed and released alone selects the previous input source,
+    /// as Shift switches Chinese and English in a Windows IME. Used only
+    /// with the input source group on and an input method installed.
+    pub shift_switches_input: bool,
     /// The user's own app classes, on top of the built-in lists in
     /// [`crate::context`].
     pub app_rules: Vec<AppRule>,
@@ -119,6 +123,7 @@ impl Default for KeyboardSettings {
             default_style: KeyboardStyle::Windows,
             devices: Vec::new(),
             groups: ShortcutGroups::all(true),
+            shift_switches_input: true,
             app_rules: Vec::new(),
             unknown: Map::new(),
         }
@@ -493,6 +498,7 @@ impl KeyboardSettings {
         if preset == Preset::Windows {
             self.groups = ShortcutGroups::all(true);
         }
+        self.shift_switches_input = preset == Preset::Windows;
     }
 
     /// Windows when every keyboard and every group is; Mac when every
@@ -502,7 +508,7 @@ impl KeyboardSettings {
             std::iter::once(self.default_style).chain(self.devices.iter().map(|d| d.style));
         let all_windows = styles.clone().all(|s| s == KeyboardStyle::Windows);
         let all_mac = styles.into_iter().all(|s| s == KeyboardStyle::Mac);
-        if all_windows && self.groups == ShortcutGroups::all(true) {
+        if all_windows && self.groups == ShortcutGroups::all(true) && self.shift_switches_input {
             ProfileStyle::Windows
         } else if all_mac {
             ProfileStyle::Mac
@@ -748,6 +754,25 @@ mod tests {
         assert!(!settings.keyboard.groups.terminal);
         assert_eq!(settings.keyboard.style(), ProfileStyle::Mac);
         assert_eq!(settings.mouse.style(), ProfileStyle::Windows);
+    }
+
+    /// The Shift switch is on in a file written before it existed, off with
+    /// the Mac preset and on again with the Windows one, and turning it off
+    /// makes the keyboard Custom rather than Windows.
+    #[test]
+    fn the_shift_switch_defaults_on_and_follows_the_presets() {
+        let old = Settings::from_json(r#"{"keyboard": {"enabled": true}}"#).unwrap();
+        assert!(old.keyboard.shift_switches_input);
+        let mut settings = Settings::default();
+        settings.apply_preset(Preset::Mac, PresetTarget::Keyboard);
+        assert!(!settings.keyboard.shift_switches_input);
+        settings.apply_preset(Preset::Windows, PresetTarget::Keyboard);
+        assert!(settings.keyboard.shift_switches_input);
+        assert_eq!(settings.keyboard.style(), ProfileStyle::Windows);
+        settings.keyboard.shift_switches_input = false;
+        assert_eq!(settings.keyboard.style(), ProfileStyle::Custom);
+        let json = serde_json::to_value(&settings).unwrap();
+        assert_eq!(json["keyboard"]["shiftSwitchesInput"], false);
     }
 
     /// A mouse preset becomes every mouse's profile: the per-mouse entries go.

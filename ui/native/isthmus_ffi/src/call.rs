@@ -9,9 +9,11 @@
 //! new export.
 
 use std::ffi::c_char;
+use std::path::PathBuf;
 
 use isthmus_input::status::{PermissionKind, SettingsPane};
 use isthmus_input::{Preset, PresetTarget, Settings};
+use isthmus_link::DeviceId;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
@@ -38,9 +40,32 @@ enum Op {
     PermissionRequest(PermissionKind),
     OpenSettingsPane(SettingsPane),
     Restore,
+    /// Lift one keyboard's mapping so the app can see which key it sends
+    /// beside the space bar (its Mac/Windows mode).
+    LayoutProbeBegin(String),
+    LayoutProbeEnd,
     LoginItemGet,
     LoginItemSet(bool),
     Shutdown,
+    /// File sharing's snapshot.
+    LinkStatus,
+    /// Ask a device to pair; it shows a code.
+    LinkPair(DeviceId),
+    /// The code read off the other device.
+    LinkPairCode(String),
+    /// Cancel or dismiss the pairing shown.
+    LinkPairCancel,
+    LinkUnpair(DeviceId),
+    LinkSend {
+        peer: DeviceId,
+        paths: Vec<PathBuf>,
+    },
+    LinkTransferCancel(String),
+    LinkTransfersClear,
+    LinkRename(String),
+    /// Show a received transfer (or, without an id, the receive folder) in
+    /// the file manager.
+    LinkReveal(Option<String>),
 }
 
 impl Op {
@@ -69,9 +94,24 @@ impl Op {
             "permission_request" => Op::PermissionRequest(arg(&request, name, "kind")?),
             "open_settings_pane" => Op::OpenSettingsPane(arg(&request, name, "pane")?),
             "restore" => Op::Restore,
+            "layout_probe_begin" => Op::LayoutProbeBegin(arg(&request, name, "deviceId")?),
+            "layout_probe_end" => Op::LayoutProbeEnd,
             "login_item_get" => Op::LoginItemGet,
             "login_item_set" => Op::LoginItemSet(arg(&request, name, "enabled")?),
             "shutdown" => Op::Shutdown,
+            "link_status" => Op::LinkStatus,
+            "link_pair" => Op::LinkPair(arg(&request, name, "peerId")?),
+            "link_pair_code" => Op::LinkPairCode(arg(&request, name, "code")?),
+            "link_pair_cancel" => Op::LinkPairCancel,
+            "link_unpair" => Op::LinkUnpair(arg(&request, name, "peerId")?),
+            "link_send" => Op::LinkSend {
+                peer: arg(&request, name, "peerId")?,
+                paths: arg(&request, name, "paths")?,
+            },
+            "link_transfer_cancel" => Op::LinkTransferCancel(arg(&request, name, "id")?),
+            "link_transfers_clear" => Op::LinkTransfersClear,
+            "link_rename" => Op::LinkRename(arg(&request, name, "name")?),
+            "link_reveal" => Op::LinkReveal(optional_arg(&request, "id")?),
             other => {
                 return Err(CtlError::invalid_argument(format!("unknown op `{other}`")));
             }
@@ -123,6 +163,16 @@ fn run(host: &Host, op: Op) -> Result<Reply, CtlError> {
             Ok(Reply::Message("System Settings is open".into()))
         }
         Op::Restore => Reply::data(host.running()?.restore().map_err(CtlError::from_service)?),
+        Op::LayoutProbeBegin(device_id) => {
+            host.running()?
+                .begin_layout_probe(&device_id)
+                .map_err(CtlError::from_service)?;
+            Ok(Reply::Message("the keyboard's mapping is lifted".into()))
+        }
+        Op::LayoutProbeEnd => {
+            host.running()?.end_layout_probe();
+            Ok(Reply::Message("the keyboard is mapped again".into()))
+        }
         Op::LoginItemGet => Reply::data(json!({"state": host.running()?.login_item()})),
         Op::LoginItemSet(enabled) => {
             let state = host
@@ -130,6 +180,52 @@ fn run(host: &Host, op: Op) -> Result<Reply, CtlError> {
                 .set_login_item(enabled)
                 .map_err(CtlError::from_service)?;
             Reply::data(json!({ "state": state }))
+        }
+        Op::LinkStatus => Reply::data(host.link()?.status()),
+        Op::LinkPair(peer) => {
+            host.link()?.pair(&peer).map_err(CtlError::from_link)?;
+            Ok(Reply::Message("the other device shows a code".into()))
+        }
+        Op::LinkPairCode(code) => {
+            host.link()?
+                .enter_code(&code)
+                .map_err(CtlError::from_link)?;
+            Ok(Reply::Message("checking the code".into()))
+        }
+        Op::LinkPairCancel => {
+            host.link()?.cancel_pairing();
+            Ok(Reply::Message("the pairing is closed".into()))
+        }
+        Op::LinkUnpair(peer) => {
+            host.link()?.unpair(&peer).map_err(CtlError::from_link)?;
+            Ok(Reply::Message("unpaired".into()))
+        }
+        Op::LinkSend { peer, paths } => {
+            let id = host
+                .link()?
+                .send(&peer, paths)
+                .map_err(CtlError::from_link)?;
+            Reply::data(json!({ "id": id }))
+        }
+        Op::LinkTransferCancel(id) => {
+            host.link()?
+                .cancel_transfer(&id)
+                .map_err(CtlError::from_link)?;
+            Ok(Reply::Message("canceling".into()))
+        }
+        Op::LinkTransfersClear => {
+            host.link()?.clear_transfers();
+            Ok(Reply::Message("cleared".into()))
+        }
+        Op::LinkRename(name) => {
+            host.link()?.rename(&name).map_err(CtlError::from_link)?;
+            Reply::data(host.link()?.status())
+        }
+        Op::LinkReveal(id) => {
+            host.link()?
+                .reveal(id.as_deref())
+                .map_err(CtlError::from_link)?;
+            Ok(Reply::Message("shown".into()))
         }
         Op::Shutdown => Ok(Reply::Message(
             match host.shutdown() {
@@ -170,8 +266,9 @@ mod tests {
     use isthmus_input::settings::{KeyboardStyle, ProfileStyle};
 
     use super::*;
+    use crate::error::ErrorCode;
     use crate::handle::{isthmus_create, isthmus_destroy};
-    use crate::test_support::{FakeService, host_with, take_reply};
+    use crate::test_support::{FakeLink, FakeService, host_with, host_with_link, take_reply};
 
     /// Calls the export as Dart does, with a handle on `handle`'s host.
     fn call(handle: *mut IsthmusHandle, request: &str) -> Value {
@@ -211,6 +308,12 @@ mod tests {
             r#"{"op": "permission_request", "kind": "camera"}"#,
             r#"{"op": "open_settings_pane", "pane": "displays"}"#,
             r#"{"op": "login_item_set", "enabled": "yes"}"#,
+            r#"{"op": "link_pair"}"#,
+            r#"{"op": "link_pair", "peerId": "../../etc"}"#,
+            r#"{"op": "link_send", "peerId": "0123456789abcdef"}"#,
+            r#"{"op": "link_send", "peerId": "0123456789abcdef", "paths": "a"}"#,
+            r#"{"op": "link_pair_code", "code": 123456}"#,
+            r#"{"op": "link_reveal", "id": 5}"#,
         ] {
             let reply = call(handle, request);
             assert_eq!(reply["success"], false, "{request}");
@@ -248,6 +351,8 @@ mod tests {
             r#"{"op": "restore"}"#,
             r#"{"op": "login_item_get"}"#,
             r#"{"op": "login_item_set", "enabled": true}"#,
+            r#"{"op": "link_status"}"#,
+            r#"{"op": "link_transfers_clear"}"#,
         ] {
             let reply = call(handle, request);
             assert_eq!(reply["success"], false, "{request}");
@@ -346,6 +451,86 @@ mod tests {
         assert!(stopped["message"].is_string());
         assert_eq!(fake.shutdowns.load(Ordering::SeqCst), 1);
         assert_eq!(call(handle, r#"{"op": "status"}"#)["code"], "NOT_RUNNING");
+        destroy(handle);
+    }
+
+    /// The link ops reach file sharing with their arguments and answer with
+    /// the documented shapes.
+    #[test]
+    fn every_link_op_reaches_file_sharing_with_its_arguments() {
+        let link = Arc::new(FakeLink::default());
+        let (host, _) = host_with_link(Arc::new(FakeService::default()), Ok(link.clone()));
+        let handle = Box::into_raw(Box::new(IsthmusHandle::new(host)));
+        call(handle, r#"{"op": "start"}"#);
+
+        let status = call(handle, r#"{"op": "link_status"}"#);
+        assert_eq!(status["data"]["me"]["name"], "Fake Mac", "{status}");
+        let peer = "0123456789abcdef";
+        let ok = |reply: Value| assert_eq!(reply["success"], true, "{reply}");
+        ok(call(
+            handle,
+            &format!(r#"{{"op": "link_pair", "peerId": "{peer}"}}"#),
+        ));
+        ok(call(
+            handle,
+            r#"{"op": "link_pair_code", "code": "123 456"}"#,
+        ));
+        ok(call(handle, r#"{"op": "link_pair_cancel"}"#));
+        let sent = call(
+            handle,
+            &format!(
+                r#"{{"op": "link_send", "peerId": "{peer}", "paths": ["/tmp/a", "/tmp/b c"]}}"#
+            ),
+        );
+        assert_eq!(sent["data"]["id"], "fake-transfer", "{sent}");
+        ok(call(
+            handle,
+            r#"{"op": "link_transfer_cancel", "id": "fake-transfer"}"#,
+        ));
+        ok(call(handle, r#"{"op": "link_transfers_clear"}"#));
+        ok(call(handle, r#"{"op": "link_reveal"}"#));
+        ok(call(
+            handle,
+            r#"{"op": "link_reveal", "id": "fake-transfer"}"#,
+        ));
+        let renamed = call(handle, r#"{"op": "link_rename", "name": "Desk"}"#);
+        assert_eq!(renamed["data"]["me"]["name"], "Fake Mac");
+        ok(call(
+            handle,
+            &format!(r#"{{"op": "link_unpair", "peerId": "{peer}"}}"#),
+        ));
+
+        assert_eq!(
+            *link.calls.lock(),
+            vec![
+                format!("pair {peer}"),
+                "code 123 456".to_owned(),
+                "cancel pairing".to_owned(),
+                format!("send {peer} /tmp/a|/tmp/b c"),
+                "cancel fake-transfer".to_owned(),
+                "clear".to_owned(),
+                "reveal -".to_owned(),
+                "reveal fake-transfer".to_owned(),
+                "rename Desk".to_owned(),
+                format!("unpair {peer}"),
+            ]
+        );
+        call(handle, r#"{"op": "shutdown"}"#);
+        assert_eq!(link.shutdowns.load(Ordering::SeqCst), 1);
+        destroy(handle);
+    }
+
+    /// File sharing that cannot start leaves the keyboard and mouse
+    /// running, and the link ops say why with the failure's own code.
+    #[test]
+    fn a_link_that_cannot_start_leaves_the_rest_running() {
+        let failure = CtlError::new(ErrorCode::Unavailable, "no network");
+        let (host, _) = host_with_link(Arc::new(FakeService::default()), Err(failure));
+        let handle = Box::into_raw(Box::new(IsthmusHandle::new(host)));
+        assert_eq!(call(handle, r#"{"op": "start"}"#)["success"], true);
+        assert_eq!(call(handle, r#"{"op": "status"}"#)["success"], true);
+        let reply = call(handle, r#"{"op": "link_status"}"#);
+        assert_eq!(reply["code"], "UNAVAILABLE", "{reply}");
         destroy(handle);
     }
 

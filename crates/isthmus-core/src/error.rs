@@ -12,8 +12,9 @@ use snafu::Snafu;
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub))]
 pub enum Error {
-    /// Neither `ISTHMUS_DATA_DIR` nor `HOME` says where the data directory
-    /// is, so there is nowhere to keep settings or the journal.
+    /// Neither `ISTHMUS_DATA_DIR` nor `HOME` (`APPDATA` on Windows) says
+    /// where the data directory is, so there is nowhere to keep settings or
+    /// the journal.
     #[snafu(display("the home directory is not known"))]
     NoHome,
 

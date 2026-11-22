@@ -43,7 +43,10 @@ class IsthmusFFI {
 
   /// The copy the Runner embeds in `Contents/Frameworks` first; the bare
   /// name second, for `flutter test` with the library beside the project.
+  /// On Windows the DLL sits beside the executable, where the loader looks
+  /// first.
   static DynamicLibrary _loadLibrary() {
+    if (Platform.isWindows) return DynamicLibrary.open('isthmus_ffi.dll');
     if (Platform.isMacOS) {
       try {
         return DynamicLibrary.open(

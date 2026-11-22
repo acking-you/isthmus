@@ -12,21 +12,29 @@ use snafu::{OptionExt, ResultExt};
 
 use crate::error::{CreateDirSnafu, Error, NoHomeSnafu};
 
-/// The directory name under Application Support. Shared by every build
-/// (release and `-local`), so the instance lock keeps them apart.
+/// The directory name under Application Support (`%APPDATA%` on Windows).
+/// Shared by every build (release and `-local`), so the instance lock keeps
+/// them apart.
 pub const APP_DIR_NAME: &str = "Isthmus";
 
 /// The variable that, set and non-empty, replaces the data directory.
 pub const DATA_DIR_ENV: &str = "ISTHMUS_DATA_DIR";
 
-/// `~/Library/Application Support/Isthmus`, or `$ISTHMUS_DATA_DIR` when that
-/// is set and non-empty; created if missing. Fails with [`Error::NoHome`]
-/// when neither says where it is.
+/// `~/Library/Application Support/Isthmus` (`%APPDATA%\Isthmus` on
+/// Windows), or `$ISTHMUS_DATA_DIR` when that is set and non-empty; created
+/// if missing. Fails with [`Error::NoHome`] when nothing says where it is.
 pub fn data_dir() -> Result<PathBuf, Error> {
-    let dir = resolve_data_dir(std::env::var_os(DATA_DIR_ENV), std::env::var_os("HOME"))?;
+    let dir = resolve_data_dir(std::env::var_os(DATA_DIR_ENV), std::env::var_os(BASE_ENV))?;
     ensure_dir(&dir)?;
     Ok(dir)
 }
+
+/// The variable naming the directory the data directory goes under: the
+/// home directory, or on Windows the roaming application data folder.
+#[cfg(not(windows))]
+const BASE_ENV: &str = "HOME";
+#[cfg(windows)]
+const BASE_ENV: &str = "APPDATA";
 
 /// The data directory from the two variables, without touching the disk or
 /// the environment, so the choice is testable on its own. An empty value
@@ -34,16 +42,27 @@ pub fn data_dir() -> Result<PathBuf, Error> {
 /// relative path under whatever directory the process runs in.
 fn resolve_data_dir(
     override_dir: Option<OsString>,
-    home: Option<OsString>,
+    base: Option<OsString>,
 ) -> Result<PathBuf, Error> {
     if let Some(dir) = override_dir.filter(|dir| !dir.is_empty()) {
         return Ok(PathBuf::from(dir));
     }
-    let home = home.filter(|home| !home.is_empty()).context(NoHomeSnafu)?;
-    Ok(PathBuf::from(home)
-        .join("Library")
+    let base = base.filter(|base| !base.is_empty()).context(NoHomeSnafu)?;
+    Ok(app_dir_under(PathBuf::from(base)))
+}
+
+/// Application Support under the home directory.
+#[cfg(not(windows))]
+fn app_dir_under(home: PathBuf) -> PathBuf {
+    home.join("Library")
         .join("Application Support")
-        .join(APP_DIR_NAME))
+        .join(APP_DIR_NAME)
+}
+
+/// Straight under `%APPDATA%`.
+#[cfg(windows)]
+fn app_dir_under(appdata: PathBuf) -> PathBuf {
+    appdata.join(APP_DIR_NAME)
 }
 
 /// Creates `dir` and its parents if they are missing; an existing directory
@@ -74,6 +93,7 @@ mod tests {
 
     /// Without an override the files live in the user's Application Support,
     /// under the one name every build shares.
+    #[cfg(not(windows))]
     #[test]
     fn the_data_dir_is_under_application_support_by_default() {
         let dir = resolve_data_dir(None, Some("/Users/someone".into())).unwrap();
@@ -92,6 +112,7 @@ mod tests {
 
     /// An empty override is treated as unset, and an unknown or empty home is
     /// an error rather than a path relative to wherever the process runs.
+    #[cfg(not(windows))]
     #[test]
     fn an_empty_override_falls_back_and_a_missing_home_is_no_home() {
         let dir = resolve_data_dir(Some("".into()), Some("/h".into())).unwrap();

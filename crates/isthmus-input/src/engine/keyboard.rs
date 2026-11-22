@@ -18,6 +18,11 @@
 //! - **The Win tap.** Win pressed and released alone, quickly, opens
 //!   Spotlight like the Start menu. Any key, other modifier, click or wheel
 //!   in between cancels it.
+//! - **The Shift tap.** Shift pressed and released alone, quickly, selects
+//!   the previous input source, so it goes between the input method and ABC
+//!   the way Shift switches Chinese and English in a Windows IME. It is
+//!   cancelled the same way, and the Shift events themselves always pass:
+//!   Shift+click, Shift+letter and an app's own double-Shift keep working.
 //!
 //! The pass path (no translation) returns [`KeyOutcome::PASS`] and allocates
 //! nothing; only an event that posts something allocates its list.
@@ -31,6 +36,18 @@ use crate::keys::{Flags, KeyCode, kc};
 /// How long Win may be held and still count as a tap of the Start key: a
 /// longer press is a chord the user changed their mind about.
 pub const WIN_TAP_WINDOW_NS: u64 = 300_000_000;
+
+/// How long Shift may be held and still count as a tap: a little longer
+/// than Win's, since a Shift about to make a capital is often held a moment
+/// before the user changes their mind, and that press is never a switch.
+pub const SHIFT_TAP_WINDOW_NS: u64 = 500_000_000;
+
+/// The modifiers that make a Shift press a chord rather than a tap. Caps
+/// Lock is a state, not a held key, so it does not count.
+const CHORD_MODIFIERS: Flags = Flags::CONTROL
+    .union(Flags::OPTION)
+    .union(Flags::COMMAND)
+    .union(Flags::FN);
 
 /// Keycodes below this have a pairing slot: every `kVK_*` code does.
 const PAIRED_KEYS: usize = 128;
@@ -93,6 +110,8 @@ pub struct KeyboardEngine {
     switcher: Option<Switcher>,
     /// When Win went down alone, while it may still be a tap.
     win_tap_since: Option<u64>,
+    /// When Shift went down alone, while it may still be a tap.
+    shift_tap_since: Option<u64>,
 }
 
 impl KeyboardEngine {
@@ -101,6 +120,7 @@ impl KeyboardEngine {
             paired: [Paired::Untracked; PAIRED_KEYS],
             switcher: None,
             win_tap_since: None,
+            shift_tap_since: None,
         }
     }
 
@@ -109,18 +129,21 @@ impl KeyboardEngine {
         match event.phase {
             KeyPhase::FlagsChanged => self.flags_changed(event, cx),
             KeyPhase::Down => {
-                // A key pressed while Win is down makes it a Win chord.
+                // A key pressed while Win or Shift is down makes it a chord.
                 self.win_tap_since = None;
+                self.shift_tap_since = None;
                 self.key(event, cx)
             }
             KeyPhase::Up => self.key(event, cx),
         }
     }
 
-    /// A mouse button went down or the wheel turned: a Win press is then no
-    /// longer a tap.
+    /// A mouse button went down or the wheel turned: a Win or Shift press is
+    /// then no longer a tap (Shift+click selects, Shift+wheel scrolls
+    /// sideways).
     pub fn note_pointer_activity(&mut self) {
         self.win_tap_since = None;
+        self.shift_tap_since = None;
     }
 
     /// Called every ~150 ms while [`Self::needs_ticks`]. `alt_down` is
@@ -179,6 +202,7 @@ impl KeyboardEngine {
             released.push(command_up(Flags::NON_COALESCED));
         }
         self.win_tap_since = None;
+        self.shift_tap_since = None;
         released
     }
 
@@ -304,10 +328,59 @@ impl KeyboardEngine {
             if matches!(event.keycode, kc::SHIFT | kc::RIGHT_SHIFT) {
                 // The switcher reads Command+Shift as "backwards".
                 self.win_tap_since = None;
+                self.shift_tap_since = None;
                 return rewrite(event.keycode, switcher_flags(event.flags));
             }
         }
-        self.track_win_tap(event, cx)
+        // Each tracker clears its own tap on any other modifier, so both see
+        // every change; at most one fires, since one key changed.
+        let shift = self.track_shift_tap(event, cx);
+        let win = self.track_win_tap(event, cx);
+        if shift.after.is_empty() { win } else { shift }
+    }
+
+    /// Arms, fires or cancels the Shift tap on a modifier change.
+    fn track_shift_tap(&mut self, event: &KeyEvent, cx: &KeyContext<'_>) -> KeyOutcome {
+        let armed_at = self.shift_tap_since.take();
+        let applies = cx.shift_switches_input
+            && cx.groups.input_source
+            && cx.app.class != AppClass::Passthrough;
+        let (own_side, other_side) = match event.keycode {
+            kc::SHIFT => (Flags::DEV_LSHIFT, Flags::DEV_RSHIFT),
+            kc::RIGHT_SHIFT => (Flags::DEV_RSHIFT, Flags::DEV_LSHIFT),
+            // Any other modifier makes it a chord.
+            _ => return KeyOutcome::PASS,
+        };
+        if !applies {
+            return KeyOutcome::PASS;
+        }
+        // Without side bits (a synthetic event, an odd keyboard) the Shift
+        // bit alone says whether it went down.
+        let sides = event
+            .flags
+            .intersects(Flags::DEV_LSHIFT.union(Flags::DEV_RSHIFT));
+        let went_down = if sides {
+            event.flags.contains(own_side)
+        } else {
+            event.flags.contains(Flags::SHIFT)
+        };
+        if went_down {
+            let alone = !event.flags.intersects(CHORD_MODIFIERS)
+                && !(sides && event.flags.contains(other_side));
+            if alone {
+                self.shift_tap_since = Some(event.timestamp_ns);
+            }
+            return KeyOutcome::PASS;
+        }
+        let quick = armed_at
+            .is_some_and(|since| event.timestamp_ns.saturating_sub(since) <= SHIFT_TAP_WINDOW_NS);
+        match cx.hotkeys.previous_input_source {
+            Some(previous) if quick && !event.flags.contains(Flags::SHIFT) => KeyOutcome {
+                after: previous.stroke().to_vec(),
+                ..KeyOutcome::PASS
+            },
+            Some(_) | None => KeyOutcome::PASS,
+        }
     }
 
     /// Arms, fires or cancels the Win tap on a modifier change.
@@ -482,6 +555,7 @@ mod tests {
         hid: HidProfile,
         groups: ShortcutGroups,
         hotkeys: SystemHotkeys,
+        shift_switches_input: bool,
     }
 
     impl Setup {
@@ -494,6 +568,7 @@ mod tests {
                 hid: profile_for(class, true),
                 groups: ShortcutGroups::all(true),
                 hotkeys: SystemHotkeys::default(),
+                shift_switches_input: true,
             }
         }
 
@@ -507,6 +582,7 @@ mod tests {
                 hid_profile: self.hid,
                 groups: &self.groups,
                 hotkeys: &self.hotkeys,
+                shift_switches_input: self.shift_switches_input,
             }
         }
     }
@@ -1291,6 +1367,114 @@ mod tests {
             let mut engine = KeyboardEngine::new();
             engine.handle(&press, &setup.cx());
             assert!(engine.handle(&release, &setup.cx()).is_pass());
+        }
+    }
+
+    /// Left or right Shift pressed and released alone within 500 ms selects
+    /// the previous input source after the release passes, in a terminal
+    /// and a JetBrains IDE too; the Shift events themselves always pass.
+    #[test]
+    fn a_quick_lone_shift_tap_selects_the_previous_input_source() {
+        let previous = Setup::standard().hotkeys.previous_input_source.unwrap();
+        let right_shift = Flags::SHIFT.union(Flags::DEV_RSHIFT);
+        for (class, keycode, held) in [
+            (AppClass::Standard, kc::SHIFT, SHIFT),
+            (AppClass::Standard, kc::RIGHT_SHIFT, right_shift),
+            (AppClass::Terminal, kc::SHIFT, SHIFT),
+            (AppClass::NativeCtrl, kc::RIGHT_SHIFT, right_shift),
+        ] {
+            let setup = Setup::class(class);
+            let mut engine = KeyboardEngine::new();
+            assert!(
+                engine
+                    .handle(&modifier(keycode, held, 1_000 * MS), &setup.cx())
+                    .is_pass()
+            );
+            assert_eq!(
+                engine.handle(&modifier(keycode, Flags::NONE, 1_450 * MS), &setup.cx()),
+                KeyOutcome {
+                    after: previous.stroke().to_vec(),
+                    ..KeyOutcome::PASS
+                },
+                "{class:?} {keycode}"
+            );
+        }
+    }
+
+    /// Typing a capital, Shift+click, Shift+wheel, Shift with another
+    /// modifier, both Shifts, or a press held past 500 ms never switches.
+    #[test]
+    fn shift_in_a_chord_or_held_long_does_not_switch() {
+        let setup = Setup::standard();
+        let press = modifier(kc::SHIFT, SHIFT, 0);
+        let release = modifier(kc::SHIFT, Flags::NONE, 100 * MS);
+        let right_shift = Flags::SHIFT.union(Flags::DEV_RSHIFT);
+        let interruptions: [&dyn Fn(&mut KeyboardEngine); 4] = [
+            &|engine| {
+                engine.handle(&down(kc::A, SHIFT), &setup.cx());
+                engine.handle(&up(kc::A, SHIFT), &setup.cx());
+            },
+            &|engine| engine.note_pointer_activity(),
+            &|engine| {
+                let ctrl = SHIFT.union(Flags::CONTROL).union(Flags::DEV_LCTL);
+                engine.handle(&modifier(kc::CONTROL, ctrl, 0), &setup.cx());
+                engine.handle(&modifier(kc::CONTROL, SHIFT, 0), &setup.cx());
+            },
+            &|engine| {
+                let both = SHIFT.union(right_shift);
+                engine.handle(&modifier(kc::RIGHT_SHIFT, both, 0), &setup.cx());
+                engine.handle(&modifier(kc::RIGHT_SHIFT, SHIFT, 0), &setup.cx());
+            },
+        ];
+        for (index, interrupt) in interruptions.iter().enumerate() {
+            let mut engine = KeyboardEngine::new();
+            engine.handle(&press, &setup.cx());
+            interrupt(&mut engine);
+            assert!(
+                engine.handle(&release, &setup.cx()).is_pass(),
+                "case {index}"
+            );
+        }
+        let mut engine = KeyboardEngine::new();
+        engine.handle(&press, &setup.cx());
+        assert!(
+            engine
+                .handle(&modifier(kc::SHIFT, Flags::NONE, 501 * MS), &setup.cx())
+                .is_pass(),
+            "held too long"
+        );
+        let mut engine = KeyboardEngine::new();
+        let with_command = SHIFT.union(MAC_COMMAND);
+        engine.handle(&modifier(kc::SHIFT, with_command, 0), &setup.cx());
+        assert!(
+            engine
+                .handle(&modifier(kc::SHIFT, MAC_COMMAND, 50 * MS), &setup.cx())
+                .is_pass(),
+            "pressed while Command was held"
+        );
+    }
+
+    /// Without the setting, the input source group, an input method to
+    /// switch to, or the "previous input source" hotkey, and in a virtual
+    /// machine (whose own IME takes Shift), a Shift tap does nothing.
+    #[test]
+    fn the_shift_tap_needs_its_setting_group_and_hotkey() {
+        let press = modifier(kc::SHIFT, SHIFT, 0);
+        let release = modifier(kc::SHIFT, Flags::NONE, 50 * MS);
+        let mut off = Setup::standard();
+        off.shift_switches_input = false;
+        let mut no_group = Setup::standard();
+        no_group.groups.input_source = false;
+        let mut no_hotkey = Setup::standard();
+        no_hotkey.hotkeys.previous_input_source = None;
+        let vm = Setup::class(AppClass::Passthrough);
+        for (index, setup) in [off, no_group, no_hotkey, vm].iter().enumerate() {
+            let mut engine = KeyboardEngine::new();
+            engine.handle(&press, &setup.cx());
+            assert!(
+                engine.handle(&release, &setup.cx()).is_pass(),
+                "case {index}"
+            );
         }
     }
 

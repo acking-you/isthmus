@@ -20,6 +20,7 @@ abstract final class AppIcons {
   static const IconData overview = LucideIcons.layoutDashboard400;
   static const IconData keyboard = LucideIcons.keyboard400;
   static const IconData mouse = LucideIcons.mouse400;
+  static const IconData devices = LucideIcons.monitorSmartphone400;
   static const IconData settings = LucideIcons.settings400;
 
   // Devices.
@@ -63,6 +64,31 @@ abstract final class AppIcons {
   static const IconData wheel = LucideIcons.arrowDownUp400;
   static const IconData pointer = LucideIcons.mousePointer2400;
   static const IconData zoom = LucideIcons.zoomIn400;
+
+  // File sharing.
+  /// A Mac peer.
+  static const IconData mac = LucideIcons.laptop400;
+
+  /// A PC peer.
+  static const IconData pc = LucideIcons.monitor400;
+
+  /// The direct cable path.
+  static const IconData cable = LucideIcons.cable400;
+
+  /// The local network path.
+  static const IconData network = LucideIcons.wifi400;
+  static const IconData send = LucideIcons.send400;
+  static const IconData outgoing = LucideIcons.arrowUpRight400;
+  static const IconData incoming = LucideIcons.arrowDownLeft400;
+  static const IconData file = LucideIcons.file400;
+  static const IconData folder = LucideIcons.folder400;
+  static const IconData folderOpen = LucideIcons.folderOpen400;
+  static const IconData drop = LucideIcons.filePlus400;
+  static const IconData pair = LucideIcons.link2400;
+  static const IconData unpair = LucideIcons.unlink400;
+  static const IconData rename = LucideIcons.pencil400;
+  static const IconData more = LucideIcons.ellipsis400;
+  static const IconData searching = LucideIcons.radar400;
 
   // Settings.
   static const IconData language = LucideIcons.globe400;

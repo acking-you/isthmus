@@ -77,12 +77,15 @@ static CHANGE_PORT: CallbackSlot<ChangePort> = CallbackSlot::empty();
 /// The next hint's `seq`.
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// The payload.
+/// The payload: an input service [`Change`], or [`LINK`].
 #[derive(Debug, Clone, Copy, Serialize)]
-struct ChangeHint {
-    kind: Change,
+struct ChangeHint<K> {
+    kind: K,
     seq: u64,
 }
+
+/// The kind file sharing's hints carry: re-read `link_status`.
+const LINK: &str = "link";
 
 /// Tells the window that `change` happened. The service's change sink: it
 /// never blocks, and does nothing when no port is installed.
@@ -90,9 +93,14 @@ pub(crate) fn emit(change: Change) {
     emit_to(&CHANGE_PORT, &SEQ, change);
 }
 
+/// Tells the window that file sharing changed; file sharing's change sink.
+pub(crate) fn emit_link() {
+    emit_to(&CHANGE_PORT, &SEQ, LINK);
+}
+
 /// [`emit`] on a given slot and counter, so the tests need not share the
 /// process's.
-fn emit_to(slot: &CallbackSlot<ChangePort>, seq: &AtomicU64, change: Change) {
+fn emit_to<K: Serialize + Copy>(slot: &CallbackSlot<ChangePort>, seq: &AtomicU64, change: K) {
     slot.with(|target| {
         let hint = ChangeHint {
             kind: change,
@@ -202,6 +210,7 @@ mod tests {
         emit_to(&slot, &seq, Change::Settings);
         emit_to(&slot, &seq, Change::FrontApp);
         emit_to(&slot, &seq, Change::Devices);
+        emit_to(&slot, &seq, LINK);
         slot.store(None);
         emit_to(&slot, &seq, Change::Status);
 
@@ -209,6 +218,7 @@ mod tests {
             serde_json::json!({"kind": "settings", "seq": 0}),
             serde_json::json!({"kind": "frontApp", "seq": 1}),
             serde_json::json!({"kind": "devices", "seq": 2}),
+            serde_json::json!({"kind": "link", "seq": 3}),
         ];
         assert_eq!(posted_to(101), expected);
     }

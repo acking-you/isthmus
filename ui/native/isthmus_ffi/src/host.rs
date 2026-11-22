@@ -14,8 +14,15 @@
 //! The ops reach the service through the [`Service`] trait, which
 //! [`InputService`] implements and the tests implement with a fake, so the
 //! lifecycle and the op table are tested without touching the system.
+//!
+//! File sharing ([`LinkService`]) starts with it, through the [`Link`]
+//! trait, and lives and dies with it, but its failure to start never stops
+//! the keyboard and mouse: the link ops answer with that failure instead.
+//! A link that could not start because another Isthmus holds its lock is
+//! tried again on the next link op, so quitting the other copy is enough.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
 use isthmus_input::context::FrontApp;
@@ -24,9 +31,10 @@ use isthmus_input::{
     ChangeSink, Error as ServiceError, InputService, Preset, PresetTarget, ServiceOptions,
     Settings, Status,
 };
+use isthmus_link::{DeviceId, Error as LinkError, LinkOptions, LinkService, LinkStatus};
 use parking_lot::Mutex;
 
-use crate::error::CtlError;
+use crate::error::{CtlError, ErrorCode};
 use crate::events;
 use crate::response::panic_text;
 
@@ -42,6 +50,8 @@ pub(crate) trait Service: Send + Sync {
     fn request_permission(&self, kind: PermissionKind) -> Status;
     fn open_settings_pane(&self, pane: SettingsPane) -> Result<(), ServiceError>;
     fn restore(&self) -> Result<Settings, ServiceError>;
+    fn begin_layout_probe(&self, device_id: &str) -> Result<(), ServiceError>;
+    fn end_layout_probe(&self);
     fn login_item(&self) -> LoginItem;
     fn set_login_item(&self, enabled: bool) -> Result<LoginItem, ServiceError>;
     fn shutdown(&self);
@@ -84,6 +94,14 @@ impl Service for InputService {
         InputService::restore(self)
     }
 
+    fn begin_layout_probe(&self, device_id: &str) -> Result<(), ServiceError> {
+        InputService::begin_layout_probe(self, device_id)
+    }
+
+    fn end_layout_probe(&self) {
+        InputService::end_layout_probe(self)
+    }
+
     fn login_item(&self) -> LoginItem {
         InputService::login_item(self)
     }
@@ -97,17 +115,89 @@ impl Service for InputService {
     }
 }
 
+/// What the link ops need from file sharing: [`LinkService`]'s methods, as
+/// a trait so the tests can stand in a fake.
+pub(crate) trait Link: Send + Sync {
+    fn status(&self) -> LinkStatus;
+    fn pair(&self, peer: &DeviceId) -> Result<(), LinkError>;
+    fn enter_code(&self, code: &str) -> Result<(), LinkError>;
+    fn cancel_pairing(&self);
+    fn unpair(&self, peer: &DeviceId) -> Result<(), LinkError>;
+    fn send(&self, peer: &DeviceId, paths: Vec<PathBuf>) -> Result<String, LinkError>;
+    fn cancel_transfer(&self, id: &str) -> Result<(), LinkError>;
+    fn clear_transfers(&self);
+    fn rename(&self, name: &str) -> Result<(), LinkError>;
+    fn reveal(&self, id: Option<&str>) -> Result<(), LinkError>;
+    fn shutdown(&self);
+}
+
+impl Link for LinkService {
+    fn status(&self) -> LinkStatus {
+        LinkService::status(self)
+    }
+
+    fn pair(&self, peer: &DeviceId) -> Result<(), LinkError> {
+        LinkService::pair(self, peer)
+    }
+
+    fn enter_code(&self, code: &str) -> Result<(), LinkError> {
+        LinkService::enter_code(self, code)
+    }
+
+    fn cancel_pairing(&self) {
+        LinkService::cancel_pairing(self)
+    }
+
+    fn unpair(&self, peer: &DeviceId) -> Result<(), LinkError> {
+        LinkService::unpair(self, peer)
+    }
+
+    fn send(&self, peer: &DeviceId, paths: Vec<PathBuf>) -> Result<String, LinkError> {
+        LinkService::send(self, peer, paths)
+    }
+
+    fn cancel_transfer(&self, id: &str) -> Result<(), LinkError> {
+        LinkService::cancel_transfer(self, id)
+    }
+
+    fn clear_transfers(&self) {
+        LinkService::clear_transfers(self)
+    }
+
+    fn rename(&self, name: &str) -> Result<(), LinkError> {
+        LinkService::rename(self, name)
+    }
+
+    fn reveal(&self, id: Option<&str>) -> Result<(), LinkError> {
+        LinkService::reveal(self, id)
+    }
+
+    fn shutdown(&self) {
+        LinkService::shutdown(self)
+    }
+}
+
 /// Starts the service; the host calls it at most once per process.
 pub(crate) type Starter = Box<dyn Fn() -> Result<Arc<dyn Service>, ServiceError> + Send + Sync>;
+
+/// Starts file sharing, answering its failure as the link ops will.
+pub(crate) type LinkStarter = Box<dyn Fn() -> Result<Arc<dyn Link>, CtlError> + Send + Sync>;
 
 /// Where the service is in its life.
 enum Lifecycle {
     /// No `start` has succeeded yet.
     Idle,
     /// Started; every op talks to this one.
-    Running(Arc<dyn Service>),
+    Running(Running),
     /// Shut down; this process does not start it again.
     Stopped,
+}
+
+/// The running services.
+struct Running {
+    service: Arc<dyn Service>,
+    /// File sharing, or why it did not start.
+    link: Result<Arc<dyn Link>, CtlError>,
 }
 
 /// What a shutdown found, so the op can say what happened.
@@ -125,13 +215,15 @@ pub(crate) enum Shutdown {
 pub struct Host {
     lifecycle: Mutex<Lifecycle>,
     starter: Starter,
+    link_starter: LinkStarter,
 }
 
 impl Host {
-    pub(crate) fn new(starter: Starter) -> Self {
+    pub(crate) fn new(starter: Starter, link_starter: LinkStarter) -> Self {
         Self {
             lifecycle: Mutex::new(Lifecycle::Idle),
             starter,
+            link_starter,
         }
     }
 
@@ -141,11 +233,18 @@ impl Host {
     pub(crate) fn start(&self) -> Result<Arc<dyn Service>, CtlError> {
         let mut lifecycle = self.lifecycle.lock();
         match &*lifecycle {
-            Lifecycle::Running(service) => Ok(service.clone()),
+            Lifecycle::Running(running) => Ok(running.service.clone()),
             Lifecycle::Stopped => Err(shut_down()),
             Lifecycle::Idle => {
                 let service = (self.starter)().map_err(CtlError::from_service)?;
-                *lifecycle = Lifecycle::Running(service.clone());
+                let link = (self.link_starter)();
+                if let Err(error) = &link {
+                    tracing::warn!(code = ?error.code(), %error, "file sharing did not start");
+                }
+                *lifecycle = Lifecycle::Running(Running {
+                    service: service.clone(),
+                    link,
+                });
                 Ok(service)
             }
         }
@@ -154,10 +253,25 @@ impl Host {
     /// The running service, for every op but `start` and `shutdown`.
     pub(crate) fn running(&self) -> Result<Arc<dyn Service>, CtlError> {
         match &*self.lifecycle.lock() {
-            Lifecycle::Running(service) => Ok(service.clone()),
+            Lifecycle::Running(running) => Ok(running.service.clone()),
             Lifecycle::Idle => Err(CtlError::not_running("Isthmus has not started yet")),
             Lifecycle::Stopped => Err(shut_down()),
         }
+    }
+
+    /// File sharing, for the link ops: its failure to start when it did
+    /// not, after one more try if another Isthmus held its lock then.
+    pub(crate) fn link(&self) -> Result<Arc<dyn Link>, CtlError> {
+        let mut lifecycle = self.lifecycle.lock();
+        let running = match &mut *lifecycle {
+            Lifecycle::Running(running) => running,
+            Lifecycle::Idle => return Err(CtlError::not_running("Isthmus has not started yet")),
+            Lifecycle::Stopped => return Err(shut_down()),
+        };
+        if matches!(&running.link, Err(error) if error.code() == ErrorCode::AnotherInstance) {
+            running.link = (self.link_starter)();
+        }
+        running.link.clone()
     }
 
     /// Puts everything back and stops the service, once; later calls wait
@@ -165,8 +279,11 @@ impl Host {
     pub(crate) fn shutdown(&self) -> Shutdown {
         let mut lifecycle = self.lifecycle.lock();
         match std::mem::replace(&mut *lifecycle, Lifecycle::Stopped) {
-            Lifecycle::Running(service) => {
-                service.shutdown();
+            Lifecycle::Running(running) => {
+                running.service.shutdown();
+                if let Ok(link) = running.link {
+                    link.shutdown();
+                }
                 Shutdown::Stopped
             }
             Lifecycle::Idle => Shutdown::NeverStarted,
@@ -181,7 +298,8 @@ fn shut_down() -> CtlError {
 }
 
 /// The process's host, with the real service behind it.
-static HOST: LazyLock<Host> = LazyLock::new(|| Host::new(Box::new(start_input_service)));
+static HOST: LazyLock<Host> =
+    LazyLock::new(|| Host::new(Box::new(start_input_service), Box::new(start_link_service)));
 
 /// The process's host.
 pub(crate) fn global() -> &'static Host {
@@ -198,6 +316,17 @@ fn start_input_service() -> Result<Arc<dyn Service>, ServiceError> {
         data_dir,
         on_change: Some(on_change),
     })?;
+    Ok(Arc::new(service))
+}
+
+/// Starts file sharing on the user's data directory, with its change hints
+/// going to Dart's change callback.
+fn start_link_service() -> Result<Arc<dyn Link>, CtlError> {
+    let data_dir = isthmus_core::paths::data_dir()
+        .map_err(|error| CtlError::new(ErrorCode::Io, error.to_string()))?;
+    let on_change: isthmus_link::ChangeSink = Arc::new(events::emit_link);
+    let service = LinkService::start(LinkOptions::new(data_dir, Some(on_change)))
+        .map_err(CtlError::from_link)?;
     Ok(Arc::new(service))
 }
 

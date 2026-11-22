@@ -43,6 +43,8 @@ dependencies:
   toastification: ^3.2.0
   # The app's own version in Settings › About.
   package_info_plus: ^10.2.2
+  # Files and folders dropped on the window, for sending to a paired device.
+  desktop_drop: ^0.9.2
 
 dev_dependencies:
   flutter_test:

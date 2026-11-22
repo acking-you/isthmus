@@ -244,6 +244,9 @@ pub struct KeyContext<'a> {
     pub hid_profile: HidProfile,
     pub groups: &'a ShortcutGroups,
     pub hotkeys: &'a SystemHotkeys,
+    /// Shift tapped alone selects the previous input source: the setting
+    /// is on and this user has an input method to switch to.
+    pub shift_switches_input: bool,
 }
 
 /// A wheel event as the tap sees it. Field numbers are `CGEventField`s.

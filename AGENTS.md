@@ -13,17 +13,22 @@ Rules for changing this repository. `CLAUDE.md` is a symlink to this file.
 ## Architecture
 - One `isthmus` binary (`crates/isthmus-cli`) with the commands `devices`,
   `status`, `settings`, `preset`, `run`, `restore` and `inspect`, and one
-  app (`ui/`); both drive `isthmus-input`.
-- Dependencies point one way: `isthmus-cli` and `isthmus-ffi`
-  (`ui/native/isthmus_ffi`) → `isthmus-input` → `isthmus-core`. A new feature
-  (discovery, pairing, file sharing, display alignment) is a sibling crate of
-  `isthmus-input` on `isthmus-core`, never a module inside it
-  ([docs/roadmap.md](docs/roadmap.md)).
-- A feature crate (`isthmus-input` and its future siblings) names an
-  operating system's API only under `src/platform/<os>/`, chosen at compile
-  time (macOS today); every other OS gets `Unsupported`. Everything above it
-  (settings, device grouping, the mapping tables, the engines, the
-  journal's decisions) is plain data, tested on any host.
+  app (`ui/`, for macOS and Windows); both drive `isthmus-input`, and the
+  app also drives `isthmus-link` (discovery, pairing, file sharing).
+- Dependencies point one way: `isthmus-cli` → `isthmus-input`, and
+  `isthmus-ffi` (`ui/native/isthmus_ffi`) → `isthmus-input` and
+  `isthmus-link`, all → `isthmus-core`. A new feature (display alignment,
+  keyboard and mouse across devices) is a sibling crate on `isthmus-core`,
+  never a module inside another ([docs/roadmap.md](docs/roadmap.md)).
+- A feature crate names an operating system's API only under
+  `src/platform/<os>`, chosen at compile time: macOS for `isthmus-input`
+  (every other OS gets `Unsupported`), macOS and Windows for
+  `isthmus-link`. Everything above it (settings, device grouping, the
+  mapping tables, the engines, the journal's decisions, path ranking, the
+  wire protocol) is plain data or portable async code, tested on any
+  host.
+- The Windows app is file sharing only: the keyboard and mouse pages and
+  the tray's Windows-habits switch exist on a Mac alone (`hasInputPages`).
 - The event tap's decisions live in `isthmus-input/src/engine/` with no OS
   types: the platform turns a `CGEvent` into the engine's values and carries
   out its answer. A new shortcut is a rule there, with a test, and a row in
@@ -35,9 +40,11 @@ Rules for changing this repository. `CLAUDE.md` is a symlink to this file.
   for the Swift quit hook alone.
 - Library, binary and bundle names are hardcoded by the Dart loader, the
   xcconfigs (`-listhmus_ffi`, `ISTHMUS_LOCAL_SUFFIX`), the Xcode build phase
-  that embeds the library, `scripts/build/`, the Makefile and `.gitignore`;
-  do not rename them. The bundle id is `dev.acking.isthmus`, `-local` for the
-  local build; Accessibility grants hang on it.
+  that embeds the library, `ui/windows/CMakeLists.txt` (`Isthmus.exe`,
+  `isthmus_ffi.dll` from `ui/native/windows/x64`), `scripts/build/`, the
+  Makefile and `.gitignore`; do not rename them. The bundle id is
+  `dev.acking.isthmus`, `-local` for the local build; Accessibility grants
+  hang on it.
 - A private macOS symbol is looked up with `dlsym`, used read-only or with no
   side effect that outlives the process, and has a public fallback.
 
@@ -66,9 +73,20 @@ Rules for changing this repository. `CLAUDE.md` is a symlink to this file.
 - The FFI's `ErrorCode` strings and change kinds never change meaning; Dart
   reads an unknown code as `INTERNAL` and an unknown kind as "something
   changed".
+- Two versions of Isthmus on two computers keep talking: a message, field
+  or enum value of the link protocol a version does not know reads as
+  `unknown` or as the value that changes nothing, and a change older
+  versions cannot read bumps the version byte of the preamble
+  (`isthmus-link/src/wire.rs`). The pinned keys in `peers.json` and the key
+  in `link-identity.json` are never regenerated silently: an unreadable
+  identity file is an error, since a new key unpairs every device.
+- Nothing from the network names a place on disk unchecked: offered paths
+  go through `files::safe_relative`, and files land in a staging folder
+  until all of them are complete.
 - One instance per Mac: the `instance.lock` `flock` decides which process
   changes the system. Every other one (another build, or `isthmus run`) runs
-  but changes nothing. Release and `-local` builds share the lock.
+  but changes nothing. Release and `-local` builds share the lock; likewise
+  `link.lock` decides which process announces the device and listens.
 - The tap callback never blocks, never takes a lock beyond cloning the
   snapshot `Arc`, allocates nothing on pass-through, and calls no
   Objective-C, AX or file API. Slow side effects go to the
@@ -133,6 +151,14 @@ Run what your change touches and say what you could not run.
 - Platform code (`platform/macos`, the Runner) runs only on a Mac, and the
   tap only with Accessibility granted to the process that runs it; unit
   tests cannot reach it. Say which of it you could not exercise.
+- Windows: `make check-windows` lints every crate and its tests for
+  `x86_64-pc-windows-msvc` from any host. The Windows runner, the
+  Windows platform code and the app on Windows build and run only on a PC;
+  say so when a change touches them.
+- File sharing between two machines needs Local Network access: a process
+  started from a sandboxed tool or an agent's shell may get `No route to
+  host` for every LAN packet. The loopback tests cover the protocol; try
+  discovery from the app or from Terminal.
 
 ## Testing
 - Cover core capabilities and real failure, state and security boundaries;
@@ -143,6 +169,9 @@ Run what your change touches and say what you could not run.
   event taps, no posted events, no `defaults write`, `tccutil` or login
   items. The decisions are pure functions tested on plain values; what needs
   the system is checked by hand, read-only where possible.
+- Link tests run services on loopback with discovery off and scratch data
+  and receive folders; no test announces on the real network or writes to
+  Downloads.
 - Tests share a process with parallel threads, so unit tests never write the
   environment. Wait on readiness, not sleeps.
 - Widget tests drive a fake `IsthmusApiClient` and never load the library.

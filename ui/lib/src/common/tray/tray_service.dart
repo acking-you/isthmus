@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -11,12 +12,18 @@ import 'package:tray_manager/tray_manager.dart';
 typedef TrayView = ({
   // The disabled first line: on, off, or what is in the way.
   String status,
-  // The "Windows habits" checkbox.
+  // The "Windows habits" checkbox; empty leaves it out (a PC has none).
   String toggleLabel,
   bool enabled,
   String openLabel,
   String quitLabel,
+  // Keyboards with a Mac/Windows switch, each a checkbox that is on in
+  // Windows mode: after flipping the keyboard's switch, one click here.
+  List<TrayKeyboardMode> keyboards,
 });
+
+/// One keyboard's mode checkbox in the menu.
+typedef TrayKeyboardMode = ({String id, String label, bool windows});
 
 /// The menu bar item: a template icon and a four-line menu.
 ///
@@ -33,7 +40,12 @@ class TrayService with TrayListener {
   /// key and never resolves a resolution variant, then pins the image to
   /// 18 pt. The 2x file fills those points on Retina, and macOS scales it
   /// down cleanly on a 1x display.
-  static const String iconAsset = 'assets/tray/tray_icon@2x.png';
+  ///
+  /// Windows has no template images and wants an `.ico`; it gets the app's
+  /// own colours, which read on a dark taskbar and a light one.
+  static String get iconAsset => Platform.isWindows
+      ? 'assets/tray/tray_icon.ico'
+      : 'assets/tray/tray_icon@2x.png';
 
   final TrayManager _tray = TrayManager.instance;
 
@@ -48,6 +60,9 @@ class TrayService with TrayListener {
 
   VoidCallback? _onOpen;
   ValueChanged<bool>? _onToggle;
+  void Function(String id, bool windows)? _onKeyboardMode;
+  final _keyboardSeparator = MenuItem.separator();
+  final Map<String, MenuItem> _keyboardItems = {};
   VoidCallback? _onQuit;
   bool _initialized = false;
   bool _menuOpen = false;
@@ -64,14 +79,18 @@ class TrayService with TrayListener {
     required VoidCallback onOpen,
     required ValueChanged<bool> onToggle,
     required VoidCallback onQuit,
+    void Function(String id, bool windows)? onKeyboardMode,
   }) async {
     _onOpen = onOpen;
     _onToggle = onToggle;
+    _onKeyboardMode = onKeyboardMode;
     _onQuit = onQuit;
     if (_initialized) return update(view);
     _initialized = true;
     _tray.addListener(this);
-    await _call(() => _tray.setIcon(iconAsset, isTemplate: true));
+    await _call(
+      () => _tray.setIcon(iconAsset, isTemplate: !Platform.isWindows),
+    );
     await update(view);
   }
 
@@ -85,7 +104,10 @@ class TrayService with TrayListener {
 
   Future<void> _render() async {
     final view = _wanted;
-    if (!_initialized || !_supported || view == null || view == _rendered) {
+    if (!_initialized ||
+        !_supported ||
+        view == null ||
+        _sameView(view, _rendered)) {
       return;
     }
     _statusItem.label = view.status;
@@ -94,7 +116,23 @@ class TrayService with TrayListener {
       ..checked = view.enabled;
     _openItem.label = view.openLabel;
     _quitItem.label = view.quitLabel;
-    _menu.items = [_statusItem, _toggleItem, _openItem, _separator, _quitItem];
+    final keyboards = [
+      for (final keyboard in view.keyboards)
+        (_keyboardItems[keyboard.id] ??= MenuItem.checkbox(
+            key: 'mode:${keyboard.id}',
+            checked: false,
+          ))
+          ..label = keyboard.label
+          ..checked = keyboard.windows,
+    ];
+    _menu.items = [
+      _statusItem,
+      if (view.toggleLabel.isNotEmpty) _toggleItem,
+      if (keyboards.isNotEmpty) ...[_keyboardSeparator, ...keyboards],
+      _separator,
+      _openItem,
+      _quitItem,
+    ];
     await _call(() => _tray.setContextMenu(_menu));
     await _call(() => _tray.setToolTip(view.status));
     _rendered = view;
@@ -115,14 +153,23 @@ class TrayService with TrayListener {
 
   @override
   void onTrayIconMouseDown() {
-    // A left click opens the menu, as every menu bar item does on macOS.
+    // A left click opens the menu, as every menu bar item does on macOS; on
+    // Windows it opens the window, and the menu is the right click's.
+    if (Platform.isWindows) {
+      _onOpen?.call();
+      return;
+    }
+    _popUp();
+  }
+
+  @override
+  void onTrayIconRightMouseDown() => _popUp();
+
+  void _popUp() {
     if (!_initialized || !_supported || _menuOpen) return;
     _menuOpen = true;
     unawaited(_showMenu());
   }
-
-  @override
-  void onTrayIconRightMouseDown() => onTrayIconMouseDown();
 
   Future<void> _showMenu() async {
     try {
@@ -136,8 +183,25 @@ class TrayService with TrayListener {
     }
   }
 
+  /// Records compare lists by identity, so the keyboards compare by value.
+  static bool _sameView(TrayView a, TrayView? b) =>
+      b != null &&
+      a.status == b.status &&
+      a.toggleLabel == b.toggleLabel &&
+      a.enabled == b.enabled &&
+      a.openLabel == b.openLabel &&
+      a.quitLabel == b.quitLabel &&
+      listEquals(a.keyboards, b.keyboards);
+
   @override
   void onTrayMenuItemClick(MenuItem menuItem) {
+    final key = menuItem.key ?? '';
+    if (key.startsWith('mode:')) {
+      final id = key.substring('mode:'.length);
+      final now = _rendered?.keyboards.where((k) => k.id == id).firstOrNull;
+      if (now != null) _onKeyboardMode?.call(id, !now.windows);
+      return;
+    }
     switch (menuItem.key) {
       case 'toggle':
         _onToggle?.call(!(_rendered?.enabled ?? false));

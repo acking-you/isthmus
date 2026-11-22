@@ -132,6 +132,12 @@ pub struct Device {
     /// It is a KVM switch's emulated keyboard or mouse, or a receiver
     /// shared through one: the physical device behind it is unknown.
     pub via_kvm: bool,
+    /// A keyboard whose firmware has a Mac/Windows mode (a switch, or a key
+    /// combination) that swaps the keys beside the space bar without telling
+    /// macOS anything: same ids, same services. Its layout is the mode it is
+    /// in, which only the user can say (see [`has_mode_switch`]).
+    #[serde(default)]
+    pub has_mode_switch: bool,
 }
 
 /// Groups services into devices. Services of one physical device share
@@ -240,6 +246,7 @@ fn build_device(kind: DeviceKind, members: &[&HidService]) -> Option<Device> {
         detected_layout,
         layout_confidence,
         via_kvm: members.iter().any(|service| is_kvm(service)),
+        has_mode_switch: kind == DeviceKind::Keyboard && has_mode_switch(&merged),
     })
 }
 
@@ -324,6 +331,41 @@ pub fn detect_layout(service: &HidService) -> (Layout, Confidence) {
         (Layout::Pc, Confidence::Medium)
     }
 }
+
+/// Does this keyboard have a Mac/Windows mode in its firmware? Keyboards
+/// that borrow Apple's vendor id without being Apple's (Keychron and other
+/// clones do, to get macOS's Apple keyboard driver) all have one, and so do
+/// the brands below whatever id they report. Flipping such a switch changes
+/// nothing macOS can see (checked on a Keychron K8: same ids, same service,
+/// no reconnect), so the mode is the user's to tell.
+pub fn has_mode_switch(service: &HidService) -> bool {
+    if service.built_in {
+        return false;
+    }
+    if is_apple_vendor(service.vendor_id) {
+        return !is_apple_made(service);
+    }
+    let name = format!("{} {}", service.manufacturer, service.product).to_ascii_lowercase();
+    MODE_SWITCH_BRANDS.iter().any(|brand| name.contains(brand))
+}
+
+/// Keyboard names whose makers ship a Mac/Windows mode: a slider (Keychron,
+/// Lofree, NuPhy, Akko, Epomaker, Royal Kludge, Keydous) or Logitech's
+/// Fn+O / Fn+P layouts on its multi-device keyboards.
+const MODE_SWITCH_BRANDS: &[&str] = &[
+    "keychron",
+    "lofree",
+    "nuphy",
+    "akko",
+    "epomaker",
+    "royal kludge",
+    "keydous",
+    "mx keys",
+    "mx mechanical",
+    "k380",
+    "k780",
+    "pop keys",
+];
 
 /// Does an Apple-vendor keyboard also carry Apple's own name? Clones that
 /// borrow the vendor id keep their own names (the Keychron K8 calls itself
@@ -811,5 +853,58 @@ mod tests {
         assert!(is_kvm(&named));
         assert!(!is_kvm(&receiver_keyboard()));
         assert!(!is_kvm(&keychron_keyboard()));
+    }
+
+    /// Keyboards whose firmware swaps the keys beside the space bar are
+    /// marked: Apple's id on another name, or a known brand; Apple's own and
+    /// built-in keyboards, and plain PC keyboards, are not.
+    #[test]
+    fn keyboards_with_a_mode_switch_are_marked() {
+        let keychron = HidService {
+            vendor_id: 0x05ac,
+            product_id: 0x024f,
+            product: "Keychron K8".into(),
+            manufacturer: "Keychron K8".into(),
+            is_keyboard: true,
+            ..HidService::default()
+        };
+        assert!(has_mode_switch(&keychron));
+        let magic = HidService {
+            vendor_id: 0x004c,
+            product: "Magic Keyboard".into(),
+            manufacturer: "Apple Inc.".into(),
+            is_keyboard: true,
+            ..HidService::default()
+        };
+        assert!(!has_mode_switch(&magic));
+        let built_in = HidService {
+            built_in: true,
+            vendor_id: 0x05ac,
+            product: "Keychron-like".into(),
+            ..HidService::default()
+        };
+        assert!(!has_mode_switch(&built_in));
+        let nuphy = HidService {
+            vendor_id: 0x19f5,
+            product: "NuPhy Air75 V2".into(),
+            ..HidService::default()
+        };
+        assert!(has_mode_switch(&nuphy));
+        let tesmart = HidService {
+            vendor_id: 0x1a86,
+            product: "HKS201-M24".into(),
+            manufacturer: "TESmart".into(),
+            ..HidService::default()
+        };
+        assert!(!has_mode_switch(&tesmart));
+        let devices = group_services(&[HidService {
+            registry_id: 1,
+            is_keyboard: true,
+            primary_usage_page: 1,
+            primary_usage: 6,
+            transport: "USB".into(),
+            ..keychron
+        }]);
+        assert!(devices.iter().all(|d| d.has_mode_switch));
     }
 }

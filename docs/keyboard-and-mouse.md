@@ -77,6 +77,19 @@ keyboard (Manufacturer "TESmart", vendor 0x1A86 bridge chips) is PC with low
 confidence; anything else is PC. The keyboard page shows the guess and lets
 the user correct it.
 
+**Keyboards with a Mac/Windows switch.** Keychron and other keyboards that
+borrow Apple's vendor id, and brands known for the switch (Lofree, NuPhy,
+Akko, Logitech's multi-device keyboards, ...), swap the keys beside the
+space bar in firmware: Command in Mac mode, Alt in Windows mode. Flipping
+the switch tells macOS nothing (checked on a Keychron K8: same ids, same
+service, no reconnect), so for these keyboards the layout is the mode,
+and the keyboard page shows it as "Keyboard mode: Mac / Windows". Isthmus
+finds it with one key press: it lifts that keyboard's mapping for a moment
+(`layout_probe_begin`, at most 20 s), asks for the key just left of the
+space bar, and reads it (Command: Mac mode, Option/Alt: Windows mode).
+After flipping the switch, the menu bar has a "Windows mode" checkbox per
+such keyboard.
+
 **Function keys.** Keyboards that report Apple's vendor id send media keys
 on F1–F12 unless Fn is held. Windows style sets `HIDFKeyMode` on their
 services so F2, F5 and F11 are F-keys, as on Windows.
@@ -173,7 +186,20 @@ digits, `-` `=` `0` zoom, `/`, Ctrl+Shift+T/N/P/Z, Ctrl+Return, Ctrl+click
 PrintScreen arrives as F13 from a PC keyboard.
 
 **Input source** (group `inputSource`): Win+Space selects the next input
-source (hotkey 61). Ctrl+Space is a guard (above).
+source (hotkey 61). Ctrl+Space is a guard (above). Shift pressed and
+released alone within 500 ms selects the previous input source (hotkey 60),
+so it goes between the input method and ABC the way Shift switches Chinese
+and English in a Windows IME; macOS's own way is Caps Lock. It has its own
+setting (`keyboard.shiftSwitchesInput`, on by default), works in terminals
+and NativeCtrl apps too, and is used only when an input method (Pinyin,
+WeType, Rime …) is among the user's input sources, read from
+`com.apple.HIToolbox`: with keyboard layouts alone a Shift tap would swap
+layouts, which Windows never does. A key, a click, the wheel or another
+modifier in between cancels it, and the Shift events themselves always pass,
+so Shift+click, capitals and an IDE's double-Shift are untouched (a double
+Shift switches twice, as on Windows). Virtual machines keep Shift for the
+IME inside them. An input method with its own Shift switch would switch
+twice; turn one of the two off.
 
 **App fixes** (group `appFixes`, standard apps only):
 
@@ -263,7 +289,7 @@ What Isthmus does is set in one file,
 | Part | What it holds |
 | --- | --- |
 | **The switch** | Off puts back every system change and removes the event tap (pause); on applies the two sections below. A new install starts off. |
-| **Keyboard** | Its own switch; the style of a keyboard with no entry of its own; per keyboard its style, layout (auto, Mac or PC) and function keys (standard, or as System Settings has them); the eight shortcut groups; the user's app rules |
+| **Keyboard** | Its own switch; the style of a keyboard with no entry of its own; per keyboard its style, layout (auto, Mac or PC) and function keys (standard, or as System Settings has them); the eight shortcut groups; whether a lone Shift switches input sources; the user's app rules |
 | **Mouse** | Its own switch; the profile of a mouse with no entry of its own; per mouse its own profile: the settings in the mouse table, with 1–12 lines per notch and speed 1–20 |
 
 A device's entry follows it across replugs, KVM switches and restarts: its
@@ -275,10 +301,10 @@ Presets are values, not modes. Each applies to the keyboard, the mouse or
 both in one click:
 
 - **Windows** puts every keyboard in Windows style with standard function
-  keys and every group on, makes the Windows profile every mouse's, and
-  turns the switch on.
+  keys, every group on and the Shift switch on, makes the Windows profile
+  every mouse's, and turns the switch on.
 - **Mac** puts every keyboard in Mac style with the function keys System
-  Settings sets, and gives every mouse the Mac profile, which leaves the
+  Settings sets and the Shift switch off, and gives every mouse the Mac profile, which leaves the
   wheel, the pointer and the side buttons as macOS has them and turns zoom
   off. It leaves the switch alone; with both sections Mac, Isthmus changes
   nothing.

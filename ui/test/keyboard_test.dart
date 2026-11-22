@@ -1,4 +1,8 @@
+import 'package:flutter/services.dart'
+    show LogicalKeyboardKey, PhysicalKeyboardKey;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:isthmus_ui/src/ffi/models.dart';
+import 'package:isthmus_ui/src/pages/keyboard_page.dart' show modeFromKey;
 import 'package:isthmus_ui/src/shell/app_scope.dart';
 import 'package:isthmus_ui/src/widgets/keycap.dart';
 import 'package:material_ui/material_ui.dart';
@@ -138,6 +142,42 @@ void main() {
     await finish(tester);
   });
 
+  testWidgets('the Shift switch saves its setting and waits on its group', (
+    tester,
+  ) async {
+    final api = FakeIsthmusApi();
+    await pumpApp(tester, api, page: AppPage.keyboard);
+    final shift = find.byKey(const Key('keyboard-shift-switch'));
+    await tester.scrollUntilVisible(
+      shift,
+      200,
+      scrollable: find
+          .descendant(
+            of: find.byKey(const Key('keyboard-list')),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    expect(tester.widget<Switch>(shift).value, isTrue);
+
+    await tester.tap(shift);
+    await settle(tester);
+    final keyboard = (api.saved.last['keyboard']! as Map)
+        .cast<String, Object?>();
+    expect(keyboard['shiftSwitchesInput'], false);
+    expect(api.stored.keyboardStyle, ProfileStyle.custom);
+
+    final group = find.byKey(const Key('keyboard-group-inputSource'));
+    await tester.ensureVisible(group);
+    await settle(tester);
+    await tester.tap(group);
+    await settle(tester);
+    final groups = ((api.saved.last['keyboard']! as Map)['groups']! as Map);
+    expect(groups['inputSource'], false);
+    expect(tester.widget<Switch>(shift).onChanged, isNull);
+    await finish(tester);
+  });
+
   testWidgets('an app picked from the running apps becomes a rule', (
     tester,
   ) async {
@@ -179,5 +219,84 @@ void main() {
     await settle(tester);
     expect((api.saved.last['keyboard']! as Map)['appRules'], isEmpty);
     await finish(tester);
+  });
+
+  /// A keyboard with a Mac/Windows switch shows its mode, not a layout
+  /// guess, and picking Windows mode saves it as a PC layout.
+  testWidgets('a switchable keyboard is set by its mode', (tester) async {
+    final api = FakeIsthmusApi(
+      devices: [
+        deviceJson(
+          'kbd:k8',
+          'keyboard',
+          name: 'Keychron K8',
+          detectedLayout: 'mac',
+          hasModeSwitch: true,
+        ),
+      ],
+    );
+    await pumpApp(tester, api, page: AppPage.keyboard);
+    expect(find.byKey(const Key('keyboard-mode-kbd:k8')), findsOneWidget);
+    expect(find.byKey(const Key('keyboard-layout-kbd:k8')), findsNothing);
+    expect(find.textContaining('Not confirmed'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('keyboard-mode-kbd:k8-windows')));
+    await settle(tester);
+    expect(_savedKeyboards(api).single['layout'], 'pc');
+    await finish(tester);
+  });
+
+  /// Finding the mode lifts the keyboard's mapping, reads the key beside
+  /// the space bar (Alt here: Windows mode), saves it, and maps the
+  /// keyboard again.
+  testWidgets('one key press finds a switchable keyboard\'s mode', (
+    tester,
+  ) async {
+    final api = FakeIsthmusApi(
+      devices: [
+        deviceJson(
+          'kbd:k8',
+          'keyboard',
+          name: 'Keychron K8',
+          detectedLayout: 'mac',
+          hasModeSwitch: true,
+        ),
+      ],
+    );
+    await pumpApp(tester, api, page: AppPage.keyboard);
+    await tester.tap(find.byKey(const Key('keyboard-identify-kbd:k8')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(api.probing, 'kbd:k8');
+
+    await tester.sendKeyDownEvent(
+      LogicalKeyboardKey.altLeft,
+      physicalKey: PhysicalKeyboardKey.altLeft,
+    );
+    await tester.sendKeyUpEvent(
+      LogicalKeyboardKey.altLeft,
+      physicalKey: PhysicalKeyboardKey.altLeft,
+    );
+    await tester.pump();
+    expect(find.textContaining('Windows mode'), findsWidgets);
+    await tester.pump(const Duration(seconds: 1));
+    await settle(tester);
+
+    expect(api.probing, isNull);
+    expect(api.calls, contains('layout_probe_end'));
+    expect(_savedKeyboards(api).single['layout'], 'pc');
+    expect(find.byKey(const Key('identify-mode')), findsNothing);
+    await finish(tester);
+  });
+
+  /// Command beside the space bar is Mac mode, Option (Alt) is Windows
+  /// mode, on either side; any other key says nothing.
+  test('the key beside the space bar tells the mode', () {
+    expect(modeFromKey(PhysicalKeyboardKey.metaLeft), Layout.mac);
+    expect(modeFromKey(PhysicalKeyboardKey.metaRight), Layout.mac);
+    expect(modeFromKey(PhysicalKeyboardKey.altLeft), Layout.pc);
+    expect(modeFromKey(PhysicalKeyboardKey.altRight), Layout.pc);
+    expect(modeFromKey(PhysicalKeyboardKey.controlLeft), isNull);
+    expect(modeFromKey(PhysicalKeyboardKey.space), isNull);
   });
 }

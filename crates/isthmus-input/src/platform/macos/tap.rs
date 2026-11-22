@@ -1010,6 +1010,7 @@ impl TapCore {
             hid_profile: snapshot.hid_profile,
             groups: &snapshot.groups,
             hotkeys: &snapshot.hotkeys,
+            shift_switches_input: snapshot.shift_switches_input,
         };
         let outcome = self.keyboard.handle(&key, &cx);
         let answer = if outcome.is_pass() {

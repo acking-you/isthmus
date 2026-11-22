@@ -12,6 +12,8 @@ abstract final class ErrorCode {
   static const permissionMissing = 'PERMISSION_MISSING';
   static const unsupported = 'UNSUPPORTED';
   static const io = 'IO';
+  static const busy = 'BUSY';
+  static const unavailable = 'UNAVAILABLE';
   static const internal = 'INTERNAL';
 
   static const _known = {
@@ -21,6 +23,8 @@ abstract final class ErrorCode {
     permissionMissing,
     unsupported,
     io,
+    busy,
+    unavailable,
     internal,
   };
 
@@ -81,6 +85,13 @@ abstract interface class IsthmusApiClient {
   /// `restore`: switches Isthmus off and puts everything back.
   Future<Settings> restore();
 
+  /// `layout_probe_begin`: lifts one keyboard's mapping (for at most 20 s)
+  /// so the key beside the space bar arrives as the keyboard sends it.
+  Future<void> beginLayoutProbe(String deviceId);
+
+  /// `layout_probe_end`: maps the probed keyboard again.
+  Future<void> endLayoutProbe();
+
   /// `login_item_get`.
   Future<LoginItem> loginItem();
 
@@ -90,6 +101,37 @@ abstract interface class IsthmusApiClient {
   /// `shutdown`: puts everything back and stops. The Runner's quit hook calls
   /// the library's own shutdown, so the app does not need this to quit.
   Future<void> shutdown();
+
+  /// `link_status`: file sharing's snapshot.
+  Future<LinkStatus> linkStatus();
+
+  /// `link_pair`: asks [peerId] to pair; it shows a code.
+  Future<void> linkPair(String peerId);
+
+  /// `link_pair_code`: the code read off the other device.
+  Future<void> linkPairCode(String code);
+
+  /// `link_pair_cancel`: cancels or dismisses the pairing shown.
+  Future<void> linkPairCancel();
+
+  /// `link_unpair`.
+  Future<void> linkUnpair(String peerId);
+
+  /// `link_send`: answers the transfer's id.
+  Future<String> linkSend(String peerId, List<String> paths);
+
+  /// `link_transfer_cancel`.
+  Future<void> linkTransferCancel(String id);
+
+  /// `link_transfers_clear`: drops finished transfers from the list.
+  Future<void> linkTransfersClear();
+
+  /// `link_rename`: answers the new snapshot.
+  Future<LinkStatus> linkRename(String name);
+
+  /// `link_reveal`: shows a received transfer, or without [id] the receive
+  /// folder, in the file manager.
+  Future<void> linkReveal([String? id]);
 }
 
 /// [IsthmusApiClient] over the FFI.
@@ -182,6 +224,13 @@ class IsthmusApi implements IsthmusApiClient {
   Future<Settings> restore() async => Settings(_object(await _call('restore')));
 
   @override
+  Future<void> beginLayoutProbe(String deviceId) =>
+      _call('layout_probe_begin', {'deviceId': deviceId});
+
+  @override
+  Future<void> endLayoutProbe() => _call('layout_probe_end');
+
+  @override
   Future<LoginItem> loginItem() async =>
       LoginItem.parse(_object(await _call('login_item_get'))['state']);
 
@@ -192,4 +241,46 @@ class IsthmusApi implements IsthmusApiClient {
 
   @override
   Future<void> shutdown() => _call('shutdown');
+
+  @override
+  Future<LinkStatus> linkStatus() async =>
+      LinkStatus.fromJson(_object(await _call('link_status')));
+
+  @override
+  Future<void> linkPair(String peerId) =>
+      _call('link_pair', {'peerId': peerId});
+
+  @override
+  Future<void> linkPairCode(String code) =>
+      _call('link_pair_code', {'code': code});
+
+  @override
+  Future<void> linkPairCancel() => _call('link_pair_cancel');
+
+  @override
+  Future<void> linkUnpair(String peerId) =>
+      _call('link_unpair', {'peerId': peerId});
+
+  @override
+  Future<String> linkSend(String peerId, List<String> paths) async {
+    final data = _object(
+      await _call('link_send', {'peerId': peerId, 'paths': paths}),
+    );
+    final id = data['id'];
+    return id is String ? id : '';
+  }
+
+  @override
+  Future<void> linkTransferCancel(String id) =>
+      _call('link_transfer_cancel', {'id': id});
+
+  @override
+  Future<void> linkTransfersClear() => _call('link_transfers_clear');
+
+  @override
+  Future<LinkStatus> linkRename(String name) async =>
+      LinkStatus.fromJson(_object(await _call('link_rename', {'name': name})));
+
+  @override
+  Future<void> linkReveal([String? id]) => _call('link_reveal', {'id': ?id});
 }

@@ -1,7 +1,8 @@
 # Isthmus app
 
-The Flutter app: a menu bar agent with one window of four pages (Overview,
-Keyboard, Mouse, Settings). It calls Rust through the C ABI in
+The Flutter app: a menu bar agent with one window of five pages (Overview,
+Keyboard, Mouse, Devices, Settings); on Windows, Devices and Settings. It
+calls Rust through the C ABI in
 `native/isthmus_ffi`, one JSON `op` at a time on a worker isolate; the ops,
 their JSON and the error codes are in
 [docs/architecture.md](../docs/architecture.md).
@@ -13,12 +14,12 @@ lib/
 └── src/
     ├── app.dart           # the store, the tray, showing and hiding the window, quitting
     ├── ffi/               # loader, isolate service, typed client, JSON models
-    ├── state/             # AppStore (reads, hints, serialized optimistic writes), shortcut examples
+    ├── state/             # AppStore (reads, hints, serialized optimistic writes), LinkStore, shortcut examples
     ├── shell/             # rail, page frame, window chrome, preferences
-    ├── pages/             # overview, keyboard, mouse, settings
+    ├── pages/             # overview, keyboard, mouse, devices, settings
     ├── theme/             # colours, type, radii, motion, glass, AppIcons (Lucide only)
     ├── widgets/           # surfaces, status chips, keycaps, setting rows, brand mark
-    └── common/            # l10n, locale, toasts, tray
+    └── common/            # l10n, locale, toasts, tray, the window-wide file drop
 ```
 
 Rules the code keeps:
@@ -31,6 +32,9 @@ Rules the code keeps:
   `ServicesBinding.instance.exitApplication(AppExitType.required)`, never
   `dart:io` `exit()`, which would skip `applicationWillTerminate` and leave
   the keyboard remapped.
+- Files dropped anywhere on the window wait in `LinkStore.staged` until a
+  device's Send button takes them; the drop target attaches to the native
+  window only (`windowReady` set), so widget tests never reach the plugin.
 - Icons come from `AppIcons`, never Material `Icons.*`.
 - `tool/gen_tray_icon.dart` draws `assets/tray/tray_icon*.png` from the same
   geometry as the brand mark.
@@ -60,5 +64,15 @@ flutter build macos --debug
 ```
 
 `flutter run -d macos` makes the terminal the app's responsible process, so
-macOS grants Accessibility to the terminal, not to Isthmus; test permissions
-with the app opened from Finder or `open`.
+macOS grants Accessibility (and Local Network access) to the terminal, not
+to Isthmus; test permissions with the app opened from Finder or `open`.
+
+On Windows, from the repository root in PowerShell:
+
+```bash
+pwsh -File scripts/build/isthmus-ffi-windows.ps1   # stage ui/native/windows/x64/isthmus_ffi.dll
+cd ui && flutter run -d windows
+```
+
+`windows/CMakeLists.txt` installs the staged DLL beside `Isthmus.exe`, where
+the Dart loader opens it by name.

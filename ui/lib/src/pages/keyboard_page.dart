@@ -1,3 +1,7 @@
+import 'dart:async';
+
+import 'package:flutter/services.dart'
+    show HardwareKeyboard, KeyDownEvent, KeyEvent, PhysicalKeyboardKey;
 import 'package:material_ui/material_ui.dart';
 import 'package:isthmus_ui/l10n/app_localizations.dart';
 import 'package:isthmus_ui/src/common/l10n_extension.dart';
@@ -285,6 +289,69 @@ class _KeyboardCard extends StatelessWidget {
     ),
   );
 
+  /// A keyboard with a Mac/Windows switch: its layout is the mode it is in,
+  /// set here to match the switch, or found by one key press.
+  List<Widget> _modeRows(BuildContext context) {
+    final l10n = context.l10n;
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final id = device.id;
+    final chosen = store.settings.layoutOf(id);
+    final unconfirmed = chosen == LayoutChoice.auto;
+    return [
+      ChoiceRow(
+        label: l10n.keyboardMode,
+        child: GlassSegmented<Layout>(
+          key: Key('keyboard-mode-$id'),
+          expand: false,
+          selected: device.layout,
+          onChanged: (layout) => store.setKeyboardLayout(
+            device,
+            layout == Layout.mac ? LayoutChoice.mac : LayoutChoice.pc,
+          ),
+          segments: [
+            GlassSegment(
+              key: Key('keyboard-mode-$id-mac'),
+              value: Layout.mac,
+              label: l10n.keyboardModeMac,
+            ),
+            GlassSegment(
+              key: Key('keyboard-mode-$id-windows'),
+              value: Layout.pc,
+              label: l10n.keyboardModeWindows,
+            ),
+          ],
+        ),
+      ),
+      Padding(
+        padding: const EdgeInsets.only(top: 4, bottom: 6),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: Text(
+                unconfirmed
+                    ? l10n.keyboardModeUnconfirmed
+                    : l10n.keyboardModeHint,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: unconfirmed ? cautionColor(scheme) : quietText(scheme),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            TextButton(
+              key: Key('keyboard-identify-$id'),
+              onPressed: device.connected
+                  ? () => _identifyMode(context, store, device)
+                  : null,
+              child: Text(l10n.keyboardModeIdentify),
+            ),
+          ],
+        ),
+      ),
+    ];
+  }
+
   @override
   Widget build(BuildContext context) {
     final l10n = context.l10n;
@@ -321,39 +388,43 @@ class _KeyboardCard extends StatelessWidget {
             ),
           ],
           const SizedBox(height: 12),
-          ChoiceRow(
-            label: l10n.keyboardLayout,
-            child: GlassSegmented<LayoutChoice>(
-              key: Key('keyboard-layout-$id'),
-              expand: false,
-              selected: settings.layoutOf(id),
-              onChanged: (layout) => _edit(layout: layout),
-              segments: [
-                for (final choice in LayoutChoice.values)
-                  GlassSegment(
-                    key: Key('keyboard-layout-$id-${choice.name}'),
-                    value: choice,
-                    label: switch (choice) {
-                      LayoutChoice.auto => l10n.layoutAuto,
-                      LayoutChoice.mac => l10n.layoutMac,
-                      LayoutChoice.pc => l10n.layoutPc,
-                    },
-                  ),
-              ],
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.only(top: 4, bottom: 6),
-            child: Text(
-              l10n.layoutDetected(
-                _layoutName(l10n, device.detectedLayout),
-                _confidenceName(l10n, device.layoutConfidence),
-              ),
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: quietText(scheme),
+          if (device.hasModeSwitch)
+            ..._modeRows(context)
+          else ...[
+            ChoiceRow(
+              label: l10n.keyboardLayout,
+              child: GlassSegmented<LayoutChoice>(
+                key: Key('keyboard-layout-$id'),
+                expand: false,
+                selected: settings.layoutOf(id),
+                onChanged: (layout) => _edit(layout: layout),
+                segments: [
+                  for (final choice in LayoutChoice.values)
+                    GlassSegment(
+                      key: Key('keyboard-layout-$id-${choice.name}'),
+                      value: choice,
+                      label: switch (choice) {
+                        LayoutChoice.auto => l10n.layoutAuto,
+                        LayoutChoice.mac => l10n.layoutMac,
+                        LayoutChoice.pc => l10n.layoutPc,
+                      },
+                    ),
+                ],
               ),
             ),
-          ),
+            Padding(
+              padding: const EdgeInsets.only(top: 4, bottom: 6),
+              child: Text(
+                l10n.layoutDetected(
+                  _layoutName(l10n, device.detectedLayout),
+                  _confidenceName(l10n, device.layoutConfidence),
+                ),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: quietText(scheme),
+                ),
+              ),
+            ),
+          ],
           SwitchRow(
             switchKey: Key('keyboard-style-$id'),
             title: l10n.keyboardWindowsStyle,
@@ -460,6 +531,11 @@ class _ShortcutCardViewState extends State<_ShortcutCardView> {
                 ),
             ],
           ),
+          if (group == ShortcutGroup.inputSource)
+            _ShiftSwitchRow(
+              store: store,
+              groupOn: store.settings.groupEnabled(group!),
+            ),
           Align(
             alignment: AlignmentDirectional.centerStart,
             child: Padding(
@@ -495,6 +571,53 @@ class _ShortcutCardViewState extends State<_ShortcutCardView> {
               alignment: Alignment.topCenter,
               child: examples,
             ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The input source card's own choice: a lone Shift tap switches between
+/// the input method and ABC. Off while the card's group is off, which
+/// switches it off too.
+class _ShiftSwitchRow extends StatelessWidget {
+  const _ShiftSwitchRow({required this.store, required this.groupOn});
+
+  final AppStore store;
+  final bool groupOn;
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(30, 8, 0, 0),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(l10n.shiftSwitchTitle, style: theme.textTheme.bodyMedium),
+                const SizedBox(height: 2),
+                Text(
+                  l10n.shiftSwitchHint,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: quietText(scheme),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          Switch(
+            key: const Key('keyboard-shift-switch'),
+            value: groupOn && store.settings.shiftSwitchesInput,
+            onChanged: groupOn
+                ? (on) => store.update((s) => s.withShiftSwitchesInput(on))
+                : null,
+          ),
         ],
       ),
     );
@@ -755,6 +878,207 @@ class _AddAppDialog extends StatelessWidget {
       ),
       actions: [
         TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: Text(l10n.cancel),
+        ),
+      ],
+    );
+  }
+}
+
+/// Find a keyboard's Mac/Windows mode with one key press: its mapping is
+/// lifted, the user presses the key beside the space bar, and the key it
+/// sends says the mode (Command: Mac, Option/Alt: Windows).
+Future<void> _identifyMode(
+  BuildContext context,
+  AppStore store,
+  DeviceEntry device,
+) async {
+  final found = await showDialog<Layout>(
+    context: context,
+    builder: (c) => IdentifyModeDialog(store: store, device: device),
+  );
+  if (found == null) return;
+  await store.setKeyboardLayout(
+    device,
+    found == Layout.mac ? LayoutChoice.mac : LayoutChoice.pc,
+  );
+}
+
+/// The mode a key beside the space bar reveals: Command on a keyboard in
+/// Mac mode, Option (Alt) in Windows mode; null for any other key.
+Layout? modeFromKey(PhysicalKeyboardKey key) {
+  if (key == PhysicalKeyboardKey.metaLeft ||
+      key == PhysicalKeyboardKey.metaRight) {
+    return Layout.mac;
+  }
+  if (key == PhysicalKeyboardKey.altLeft ||
+      key == PhysicalKeyboardKey.altRight) {
+    return Layout.pc;
+  }
+  return null;
+}
+
+/// Asks for the key beside the space bar while the keyboard is unmapped,
+/// and closes with the mode it reveals. The mapping comes back however the
+/// dialog ends (and Rust restores it after 20 s should the app vanish).
+class IdentifyModeDialog extends StatefulWidget {
+  const IdentifyModeDialog({
+    super.key,
+    required this.store,
+    required this.device,
+  });
+
+  final AppStore store;
+  final DeviceEntry device;
+
+  @override
+  State<IdentifyModeDialog> createState() => _IdentifyModeDialogState();
+}
+
+class _IdentifyModeDialogState extends State<IdentifyModeDialog> {
+  bool _listening = false;
+  bool _probing = false;
+  bool _timedOut = false;
+  bool _wrongKey = false;
+  Layout? _found;
+  Timer? _timeout;
+
+  @override
+  void initState() {
+    super.initState();
+    HardwareKeyboard.instance.addHandler(_onKey);
+    unawaited(_start());
+  }
+
+  Future<void> _start() async {
+    setState(() {
+      _timedOut = false;
+      _wrongKey = false;
+    });
+    _probing = await widget.store.beginLayoutProbe(widget.device.id);
+    if (!mounted) return;
+    if (!_probing) {
+      Navigator.of(context).pop();
+      return;
+    }
+    // The HID thread lifts the mapping a moment after the call returns.
+    await Future<void>.delayed(const Duration(milliseconds: 250));
+    if (!mounted) return;
+    setState(() => _listening = true);
+    _timeout?.cancel();
+    _timeout = Timer(const Duration(seconds: 15), () {
+      if (!mounted || _found != null) return;
+      setState(() {
+        _listening = false;
+        _timedOut = true;
+      });
+      unawaited(_end());
+    });
+  }
+
+  bool _onKey(KeyEvent event) {
+    if (!_listening || _found != null || event is! KeyDownEvent) {
+      return false;
+    }
+    final mode = modeFromKey(event.physicalKey);
+    if (mode == null) {
+      setState(() => _wrongKey = true);
+      return true;
+    }
+    _timeout?.cancel();
+    setState(() {
+      _found = mode;
+      _listening = false;
+    });
+    unawaited(_finish(mode));
+    return true;
+  }
+
+  Future<void> _finish(Layout mode) async {
+    await _end();
+    await Future<void>.delayed(const Duration(milliseconds: 700));
+    if (mounted) Navigator.of(context).pop(mode);
+  }
+
+  Future<void> _end() async {
+    if (!_probing) return;
+    _probing = false;
+    await widget.store.endLayoutProbe();
+  }
+
+  @override
+  void dispose() {
+    HardwareKeyboard.instance.removeHandler(_onKey);
+    _timeout?.cancel();
+    unawaited(_end());
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final found = _found;
+    final String body;
+    if (found != null) {
+      body = found == Layout.mac
+          ? l10n.identifyFoundMac
+          : l10n.identifyFoundWindows;
+    } else if (_timedOut) {
+      body = l10n.identifyTimeout;
+    } else if (_wrongKey) {
+      body = l10n.identifyWrongKey;
+    } else {
+      body = l10n.identifyPrompt(widget.device.name);
+    }
+    return AlertDialog(
+      key: const Key('identify-mode'),
+      icon: Icon(AppIcons.keyboardLarge, color: scheme.onSurfaceVariant),
+      title: Text(l10n.identifyTitle(widget.device.name)),
+      content: SizedBox(
+        width: 380,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              body,
+              key: const Key('identify-mode-body'),
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodyMedium,
+            ),
+            const SizedBox(height: 16),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Keycap('Ctrl'),
+                const SizedBox(width: 6),
+                Keycap(found == Layout.mac ? '⌥' : '?'),
+                const SizedBox(width: 6),
+                Keycap(
+                  found == null
+                      ? '?'
+                      : found == Layout.mac
+                      ? '⌘'
+                      : 'Alt',
+                ),
+                const SizedBox(width: 6),
+                const Keycap('            '),
+              ],
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        if (_timedOut)
+          TextButton(
+            key: const Key('identify-mode-retry'),
+            onPressed: _start,
+            child: Text(l10n.identifyRetry),
+          ),
+        TextButton(
+          key: const Key('identify-mode-cancel'),
           onPressed: () => Navigator.of(context).pop(),
           child: Text(l10n.cancel),
         ),

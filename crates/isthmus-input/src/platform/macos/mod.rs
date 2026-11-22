@@ -13,6 +13,7 @@ pub(crate) mod devices;
 pub(crate) mod display;
 pub(crate) mod hid;
 pub(crate) mod hotkeys;
+pub(crate) mod input_sources;
 pub(crate) mod inspect;
 pub(crate) mod login;
 pub(crate) mod permissions;
@@ -50,6 +51,9 @@ pub(crate) struct TapSnapshot {
     pub hid_profile: HidProfile,
     pub groups: ShortcutGroups,
     pub hotkeys: SystemHotkeys,
+    /// A lone Shift tap selects the previous input source: the setting is
+    /// on and this user has an input method.
+    pub shift_switches_input: bool,
     /// The profile of a wheel event whose sender is not in `mouse_by_sender`.
     pub mouse_default: MouseProfile,
     /// Profiles by sending service registry id (CGEvent field 87).
@@ -66,6 +70,7 @@ impl Default for TapSnapshot {
             hid_profile: HidProfile::Positions,
             groups: ShortcutGroups::all(false),
             hotkeys: SystemHotkeys::default(),
+            shift_switches_input: false,
             mouse_default: MouseProfile::MAC,
             mouse_by_sender: HashMap::new(),
         }

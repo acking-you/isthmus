@@ -1,7 +1,8 @@
 /// The JSON shapes `isthmus_call_json` answers with, as Dart values.
 ///
 /// They mirror the serde forms of the Rust types in
-/// `crates/isthmus-input/src/{settings,status,context,device}.rs` (camelCase).
+/// `crates/isthmus-input/src/{settings,status,context,device}.rs` and
+/// `crates/isthmus-link/src/status.rs` (camelCase).
 /// Every reader is tolerant: a missing field takes the Rust default, and an
 /// enum value this build does not know reads as the variant Rust's
 /// `#[serde(other)]` picks, so a newer library never crashes an older app.
@@ -422,6 +423,10 @@ class Settings {
   bool groupEnabled(ShortcutGroup group) =>
       _bool(_map(_keyboard['groups'])[group.key], true);
 
+  /// Shift tapped alone selects the previous input source, as Shift
+  /// switches Chinese and English in a Windows IME (`shiftSwitchesInput`).
+  bool get shiftSwitchesInput => _bool(_keyboard['shiftSwitchesInput'], true);
+
   List<AppRule> get appRules => [
     for (final entry in _list(_keyboard['appRules']))
       AppRule.fromJson(_map(entry)),
@@ -435,7 +440,9 @@ class Settings {
       for (final device in keyboardDevices) device.style,
     ];
     final allGroups = ShortcutGroup.values.every(groupEnabled);
-    if (styles.every((s) => s == KeyboardStyle.windows) && allGroups) {
+    if (styles.every((s) => s == KeyboardStyle.windows) &&
+        allGroups &&
+        shiftSwitchesInput) {
       return ProfileStyle.windows;
     }
     if (styles.every((s) => s == KeyboardStyle.mac)) return ProfileStyle.mac;
@@ -506,6 +513,9 @@ class Settings {
   Settings withGroup(ShortcutGroup group, bool on) => _edit(
     (root) => _child(_child(root, 'keyboard'), 'groups')[group.key] = on,
   );
+
+  Settings withShiftSwitchesInput(bool on) =>
+      _edit((root) => _child(root, 'keyboard')['shiftSwitchesInput'] = on);
 
   /// Keyboard [id]'s entry with the given fields changed, created from what
   /// the keyboard gets now when it has none, so making an entry for one
@@ -617,6 +627,7 @@ class Settings {
           groups[group.key] = true;
         }
       }
+      section['shiftSwitchesInput'] = preset == Preset.windows;
     }
     if (mouse) {
       final section = _child(root, 'mouse');
@@ -915,6 +926,7 @@ class DeviceEntry {
     this.detectedLayout = Layout.pc,
     this.layoutConfidence = Confidence.medium,
     this.viaKvm = false,
+    this.hasModeSwitch = false,
     this.connected = true,
     this.layout = Layout.pc,
     this.applied = false,
@@ -930,6 +942,7 @@ class DeviceEntry {
     detectedLayout: Layout.parse(json['detectedLayout']),
     layoutConfidence: Confidence.parse(json['layoutConfidence']),
     viaKvm: _bool(json['viaKvm'], false),
+    hasModeSwitch: _bool(json['hasModeSwitch'], false),
     connected: _bool(json['connected'], true),
     layout: Layout.parse(json['layout']),
     applied: _bool(json['applied'], false),
@@ -949,6 +962,10 @@ class DeviceEntry {
 
   /// A KVM switch's emulated device: the one behind it is unknown.
   final bool viaKvm;
+
+  /// A keyboard with a Mac/Windows mode in its firmware (Keychron and
+  /// others): its layout is the mode it is in, which it never tells macOS.
+  final bool hasModeSwitch;
 
   /// Connected now; a remembered device with settings is listed while away.
   final bool connected;
@@ -991,6 +1008,9 @@ enum ChangeKind {
   devices,
   settings,
   frontApp,
+
+  /// File sharing: re-read `link_status`.
+  link,
   unknown;
 
   static ChangeKind parse(Object? raw) => switch (raw) {
@@ -998,6 +1018,7 @@ enum ChangeKind {
     'devices' => ChangeKind.devices,
     'settings' => ChangeKind.settings,
     'frontApp' => ChangeKind.frontApp,
+    'link' => ChangeKind.link,
     _ => ChangeKind.unknown,
   };
 }
@@ -1014,4 +1035,406 @@ class Change {
 
   /// Rust's counter, increasing with each hint.
   final int seq;
+}
+
+// ---------------------------------------------------------------------------
+// File sharing (`crates/isthmus-link/src/status.rs`).
+
+/// How another device is reached (`PathKind`), best first. Unknown reads as
+/// [lan], the path that promises least.
+enum PathKind {
+  /// A cable straight to the other computer, such as a USB Ethernet adapter
+  /// on a KVM's hub.
+  direct,
+
+  /// The network both computers are on.
+  lan;
+
+  static PathKind parse(Object? raw) =>
+      raw == 'direct' ? PathKind.direct : PathKind.lan;
+}
+
+/// The system another device runs (`PeerOs`).
+enum PeerOs {
+  macos,
+  windows,
+  linux,
+  other;
+
+  static PeerOs parse(Object? raw) => switch (raw) {
+    'macos' => PeerOs.macos,
+    'windows' => PeerOs.windows,
+    'linux' => PeerOs.linux,
+    _ => PeerOs.other,
+  };
+}
+
+/// Which side of a pairing this device is (`PairRole`).
+enum PairRole {
+  /// This device asked; the user types the other's code here.
+  outgoing,
+
+  /// The other device asked; this one shows the code.
+  incoming;
+
+  static PairRole parse(Object? raw) =>
+      raw == 'incoming' ? PairRole.incoming : PairRole.outgoing;
+}
+
+/// Where a pairing is (`PairStage`). Unknown reads as [connecting].
+enum PairStage {
+  connecting,
+  code,
+  verifying,
+  paired,
+  failed;
+
+  static PairStage parse(Object? raw) => switch (raw) {
+    'code' => PairStage.code,
+    'verifying' => PairStage.verifying,
+    'paired' => PairStage.paired,
+    'failed' => PairStage.failed,
+    _ => PairStage.connecting,
+  };
+
+  bool get finished => this == PairStage.paired || this == PairStage.failed;
+}
+
+/// Why a pairing failed (`PairFailure`).
+enum PairFailure {
+  wrongCode,
+  unreachable,
+  busy,
+  canceled,
+  timedOut,
+  lost,
+  mismatch,
+  other;
+
+  static PairFailure parse(Object? raw) => switch (raw) {
+    'wrongCode' => PairFailure.wrongCode,
+    'unreachable' => PairFailure.unreachable,
+    'busy' => PairFailure.busy,
+    'canceled' => PairFailure.canceled,
+    'timedOut' => PairFailure.timedOut,
+    'lost' => PairFailure.lost,
+    'mismatch' => PairFailure.mismatch,
+    _ => PairFailure.other,
+  };
+}
+
+/// Which way a transfer goes (`Direction`).
+enum TransferDirection {
+  send,
+  receive;
+
+  static TransferDirection parse(Object? raw) =>
+      raw == 'receive' ? TransferDirection.receive : TransferDirection.send;
+}
+
+/// Where a transfer is (`TransferState`). Unknown reads as [connecting].
+enum TransferState {
+  connecting,
+  running,
+  retrying,
+  done,
+  failed,
+  canceled;
+
+  static TransferState parse(Object? raw) => switch (raw) {
+    'running' => TransferState.running,
+    'retrying' => TransferState.retrying,
+    'done' => TransferState.done,
+    'failed' => TransferState.failed,
+    'canceled' => TransferState.canceled,
+    _ => TransferState.connecting,
+  };
+
+  bool get finished =>
+      this == TransferState.done ||
+      this == TransferState.failed ||
+      this == TransferState.canceled;
+}
+
+/// Why a transfer failed (`TransferFailure`).
+enum TransferFailure {
+  notPaired,
+  unreachable,
+  lost,
+  disk,
+  source,
+  refused,
+  canceledByPeer,
+  other;
+
+  static TransferFailure parse(Object? raw) => switch (raw) {
+    'notPaired' => TransferFailure.notPaired,
+    'unreachable' => TransferFailure.unreachable,
+    'lost' => TransferFailure.lost,
+    'disk' => TransferFailure.disk,
+    'source' => TransferFailure.source,
+    'refused' => TransferFailure.refused,
+    'canceledByPeer' => TransferFailure.canceledByPeer,
+    _ => TransferFailure.other,
+  };
+}
+
+/// One of this device's addresses (`LocalPath`).
+class LocalPath {
+  const LocalPath({
+    required this.interface,
+    required this.address,
+    required this.kind,
+  });
+
+  factory LocalPath.fromJson(Map<String, Object?> json) => LocalPath(
+    interface: _string(json['interface']),
+    address: _string(json['address']),
+    kind: PathKind.parse(json['kind']),
+  );
+
+  final String interface;
+  final String address;
+  final PathKind kind;
+}
+
+/// This device as others see it (`Me`).
+class LinkMe {
+  const LinkMe({
+    required this.id,
+    required this.name,
+    required this.os,
+    required this.port,
+    this.paths = const [],
+  });
+
+  factory LinkMe.fromJson(Map<String, Object?> json) => LinkMe(
+    id: _string(json['id']),
+    name: _string(json['name']),
+    os: PeerOs.parse(json['os']),
+    port: _int(json['port'], 0),
+    paths: [
+      for (final path in _list(json['paths'])) LocalPath.fromJson(_map(path)),
+    ],
+  );
+
+  final String id;
+  final String name;
+  final PeerOs os;
+  final int port;
+  final List<LocalPath> paths;
+}
+
+/// How a session with a paired device runs (`ConnectionView`).
+class PeerConnection {
+  const PeerConnection({
+    required this.kind,
+    this.interface,
+    required this.address,
+  });
+
+  factory PeerConnection.fromJson(Map<String, Object?> json) => PeerConnection(
+    kind: PathKind.parse(json['kind']),
+    interface: json['interface'] is String ? json['interface'] as String : null,
+    address: _string(json['address']),
+  );
+
+  final PathKind kind;
+  final String? interface;
+  final String address;
+}
+
+/// Another Isthmus device (`PeerView`).
+class PeerEntry {
+  const PeerEntry({
+    required this.id,
+    required this.name,
+    required this.os,
+    required this.paired,
+    required this.online,
+    this.connection,
+    this.routes = const [],
+  });
+
+  factory PeerEntry.fromJson(Map<String, Object?> json) {
+    final connection = json['connection'];
+    return PeerEntry(
+      id: _string(json['id']),
+      name: _string(json['name']),
+      os: PeerOs.parse(json['os']),
+      paired: _bool(json['paired'], false),
+      online: _bool(json['online'], false),
+      connection: connection is Map
+          ? PeerConnection.fromJson(connection.cast<String, Object?>())
+          : null,
+      routes: [for (final kind in _list(json['routes'])) PathKind.parse(kind)],
+    );
+  }
+
+  final String id;
+  final String name;
+  final PeerOs os;
+  final bool paired;
+
+  /// Paired: a session is up. Unpaired: it is seen on the network.
+  final bool online;
+  final PeerConnection? connection;
+
+  /// The kinds of path it is seen on, best first.
+  final List<PathKind> routes;
+}
+
+/// A pairing in progress or just finished (`PairingView`).
+class PairingInfo {
+  const PairingInfo({
+    required this.role,
+    required this.peerId,
+    required this.peerName,
+    required this.peerOs,
+    this.code,
+    required this.stage,
+    this.failure,
+  });
+
+  factory PairingInfo.fromJson(Map<String, Object?> json) => PairingInfo(
+    role: PairRole.parse(json['role']),
+    peerId: _string(json['peerId']),
+    peerName: _string(json['peerName']),
+    peerOs: PeerOs.parse(json['peerOs']),
+    code: json['code'] is String ? json['code'] as String : null,
+    stage: PairStage.parse(json['stage']),
+    failure: json['failure'] == null
+        ? null
+        : PairFailure.parse(json['failure']),
+  );
+
+  final PairRole role;
+  final String peerId;
+  final String peerName;
+  final PeerOs peerOs;
+
+  /// Incoming, while the code shows: the six digits.
+  final String? code;
+  final PairStage stage;
+  final PairFailure? failure;
+}
+
+/// One transfer (`TransferView`).
+class TransferEntry {
+  const TransferEntry({
+    required this.id,
+    required this.peerId,
+    required this.peerName,
+    required this.direction,
+    required this.name,
+    required this.files,
+    required this.totalBytes,
+    required this.doneBytes,
+    required this.bytesPerSecond,
+    required this.state,
+    this.path,
+    this.failure,
+    this.savedTo,
+    this.startedAt = 0,
+  });
+
+  factory TransferEntry.fromJson(Map<String, Object?> json) => TransferEntry(
+    id: _string(json['id']),
+    peerId: _string(json['peerId']),
+    peerName: _string(json['peerName']),
+    direction: TransferDirection.parse(json['direction']),
+    name: _string(json['name']),
+    files: _int(json['files'], 0),
+    totalBytes: _int(json['totalBytes'], 0),
+    doneBytes: _int(json['doneBytes'], 0),
+    bytesPerSecond: _int(json['bytesPerSecond'], 0),
+    state: TransferState.parse(json['state']),
+    path: json['path'] == null ? null : PathKind.parse(json['path']),
+    failure: json['failure'] == null
+        ? null
+        : TransferFailure.parse(json['failure']),
+    savedTo: json['savedTo'] is String ? json['savedTo'] as String : null,
+    startedAt: _int(json['startedAt'], 0),
+  );
+
+  final String id;
+  final String peerId;
+  final String peerName;
+  final TransferDirection direction;
+
+  /// The first item's name.
+  final String name;
+
+  /// How many files, folders not counted.
+  final int files;
+  final int totalBytes;
+  final int doneBytes;
+  final int bytesPerSecond;
+  final TransferState state;
+
+  /// The path the bytes take or last took.
+  final PathKind? path;
+  final TransferFailure? failure;
+
+  /// Received: the one item, or the folder several landed in.
+  final String? savedTo;
+
+  /// Seconds since 1970.
+  final int startedAt;
+
+  /// From 0 to 1; an empty transfer is whole.
+  double get progress =>
+      totalBytes <= 0 ? 1 : (doneBytes / totalBytes).clamp(0.0, 1.0);
+}
+
+/// Everything about file sharing at one moment (`LinkStatus`). Two reads
+/// compare equal when their JSON does, so a hint that changed nothing
+/// redraws nothing.
+class LinkStatus {
+  LinkStatus._(this._json)
+    : me = LinkMe.fromJson(_map(_json['me'])),
+      receiveDir = _string(_json['receiveDir']),
+      peers = [
+        for (final peer in _list(_json['peers']))
+          PeerEntry.fromJson(_map(peer)),
+      ],
+      pairing = _json['pairing'] is Map
+          ? PairingInfo.fromJson(_map(_json['pairing']))
+          : null,
+      transfers = [
+        for (final transfer in _list(_json['transfers']))
+          TransferEntry.fromJson(_map(transfer)),
+      ];
+
+  factory LinkStatus.fromJson(Map<String, Object?> json) => LinkStatus._(json);
+
+  final Map<String, Object?> _json;
+  final LinkMe me;
+
+  /// Where received files go.
+  final String receiveDir;
+
+  /// Paired first, then online, then by name.
+  final List<PeerEntry> peers;
+  final PairingInfo? pairing;
+
+  /// Newest first.
+  final List<TransferEntry> transfers;
+
+  List<PeerEntry> get paired => [
+    for (final peer in peers)
+      if (peer.paired) peer,
+  ];
+
+  List<PeerEntry> get nearby => [
+    for (final peer in peers)
+      if (!peer.paired) peer,
+  ];
+
+  @override
+  bool operator ==(Object other) =>
+      other is LinkStatus && jsonEquals(_json, other._json);
+
+  @override
+  int get hashCode => Object.hash(me.id, peers.length, transfers.length);
 }

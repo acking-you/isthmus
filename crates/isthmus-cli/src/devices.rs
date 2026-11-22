@@ -139,6 +139,7 @@ mod tests {
             detected_layout: Layout::Pc,
             layout_confidence: Confidence::Low,
             via_kvm,
+            has_mode_switch: false,
         }
     }
 

@@ -14,6 +14,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/widgets.dart' show Scrollable;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:isthmus_ui/src/shell/app_scope.dart';
@@ -87,6 +88,21 @@ void main() {
           await tester.runAsync(_loadRealFonts);
           await pumpApp(tester, busyApi(), page: page, locale: locale);
           await _capture(tester, '${page.name}-${locale.languageCode}');
+          if (page == AppPage.devices) {
+            await tester.scrollUntilVisible(
+              find.byKey(const Key('transfer-t3')),
+              300,
+              scrollable: find
+                  .descendant(
+                    of: find.byKey(const Key('devices-list')),
+                    matching: find.byType(Scrollable),
+                  )
+                  .first,
+            );
+            // A retrying transfer's bar never settles: pump, do not settle.
+            await tester.pump(const Duration(milliseconds: 300));
+            await _capture(tester, 'transfers-${locale.languageCode}');
+          }
           if (page == AppPage.keyboard) {
             await tapInList(
               tester,

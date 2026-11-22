@@ -14,9 +14,13 @@ use isthmus_input::status::{
     SettingsPane, TapState,
 };
 use isthmus_input::{Error as ServiceError, Preset, PresetTarget, Settings, Status};
+use isthmus_link::status::Me;
+use isthmus_link::store::PeerOs;
+use isthmus_link::{DeviceId, Error as LinkError, LinkStatus};
 use parking_lot::Mutex;
 
-use crate::host::{Host, Service};
+use crate::error::CtlError;
+use crate::host::{Host, Link, Service};
 
 /// A service that keeps its settings in memory and records what it was
 /// asked, with switches for the failures a test needs.
@@ -110,6 +114,12 @@ impl Service for FakeService {
         Ok(settings.clone())
     }
 
+    fn begin_layout_probe(&self, _device_id: &str) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    fn end_layout_probe(&self) {}
+
     fn login_item(&self) -> LoginItem {
         self.login_item.lock().unwrap_or(LoginItem::Disabled)
     }
@@ -137,22 +147,118 @@ impl Service for FakeService {
     }
 }
 
+/// File sharing that records each call as a line of text.
+#[derive(Default)]
+pub(crate) struct FakeLink {
+    pub calls: Mutex<Vec<String>>,
+    pub shutdowns: AtomicUsize,
+}
+
+impl FakeLink {
+    fn record(&self, call: String) {
+        self.calls.lock().push(call);
+    }
+}
+
+impl Link for FakeLink {
+    fn status(&self) -> LinkStatus {
+        LinkStatus {
+            me: Me {
+                id: DeviceId::try_from("fedcba9876543210".to_owned()).unwrap(),
+                name: "Fake Mac".into(),
+                os: PeerOs::Macos,
+                port: 47821,
+                paths: Vec::new(),
+            },
+            receive_dir: "/fake/Downloads".into(),
+            peers: Vec::new(),
+            pairing: None,
+            transfers: Vec::new(),
+        }
+    }
+
+    fn pair(&self, peer: &DeviceId) -> Result<(), LinkError> {
+        self.record(format!("pair {peer}"));
+        Ok(())
+    }
+
+    fn enter_code(&self, code: &str) -> Result<(), LinkError> {
+        self.record(format!("code {code}"));
+        Ok(())
+    }
+
+    fn cancel_pairing(&self) {
+        self.record("cancel pairing".into());
+    }
+
+    fn unpair(&self, peer: &DeviceId) -> Result<(), LinkError> {
+        self.record(format!("unpair {peer}"));
+        Ok(())
+    }
+
+    fn send(&self, peer: &DeviceId, paths: Vec<PathBuf>) -> Result<String, LinkError> {
+        let paths: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
+        self.record(format!("send {peer} {}", paths.join("|")));
+        Ok("fake-transfer".into())
+    }
+
+    fn cancel_transfer(&self, id: &str) -> Result<(), LinkError> {
+        self.record(format!("cancel {id}"));
+        Ok(())
+    }
+
+    fn clear_transfers(&self) {
+        self.record("clear".into());
+    }
+
+    fn rename(&self, name: &str) -> Result<(), LinkError> {
+        self.record(format!("rename {name}"));
+        Ok(())
+    }
+
+    fn reveal(&self, id: Option<&str>) -> Result<(), LinkError> {
+        self.record(format!("reveal {}", id.unwrap_or("-")));
+        Ok(())
+    }
+
+    fn shutdown(&self) {
+        self.shutdowns.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
 /// A host whose starter hands out `fake`, and the number of starts it made.
 /// Leaked, as the process's own host lives for the whole process.
 pub(crate) fn host_with(fake: Arc<FakeService>) -> (&'static Host, Arc<AtomicUsize>) {
+    host_with_link(fake, Ok(Arc::new(FakeLink::default())))
+}
+
+/// [`host_with`], with file sharing that starts as `link` says.
+pub(crate) fn host_with_link(
+    fake: Arc<FakeService>,
+    link: Result<Arc<FakeLink>, CtlError>,
+) -> (&'static Host, Arc<AtomicUsize>) {
     let starts = Arc::new(AtomicUsize::new(0));
     let counted = starts.clone();
-    let host = Host::new(Box::new(move || {
-        counted.fetch_add(1, Ordering::SeqCst);
-        if fake.fail_start.load(Ordering::SeqCst) {
-            return Err(ServiceError::ReadSettings {
-                path: PathBuf::from("/fake/settings.json"),
-                source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
-            });
-        }
-        let service: Arc<dyn Service> = fake.clone();
-        Ok(service)
-    }));
+    let link_starter = Box::new(move || {
+        link.clone().map(|link| {
+            let link: Arc<dyn Link> = link;
+            link
+        })
+    });
+    let host = Host::new(
+        Box::new(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            if fake.fail_start.load(Ordering::SeqCst) {
+                return Err(ServiceError::ReadSettings {
+                    path: PathBuf::from("/fake/settings.json"),
+                    source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+                });
+            }
+            let service: Arc<dyn Service> = fake.clone();
+            Ok(service)
+        }),
+        link_starter,
+    );
     (Box::leak(Box::new(host)), starts)
 }
 

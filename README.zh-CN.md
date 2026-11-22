@@ -44,6 +44,7 @@
 - **Windows 的指针速度**：Windows 的 1–20 档，关闭「提高指针精确度」时的手感，每只鼠标分别设置（[鼠标](docs/keyboard-and-mouse.zh-CN.md#鼠标)）。
 - **分开调或一起切**：键盘和鼠标各有自己的开关，每个设备有自己的设置，Windows 和 Mac 两个预设一键作用于两者或其中之一（[设置](docs/keyboard-and-mouse.zh-CN.md#设置与一键切换)）。
 - **一切都会恢复**：Isthmus 对 macOS 的每一处改动都先记下再执行，并在退出、暂停、切换到其他用户时恢复，崩溃后则在下次启动时恢复。KVM 切换等同于重新插拔，Isthmus 会重新应用设置（[恢复](docs/keyboard-and-mouse.zh-CN.md#系统改动与恢复)）。
+- **电脑之间互传文件**：另一台 Mac 或 PC 上的 Isthmus 会自动出现；用 6 位配对码配对一次，之后两台会自己连上。把文件拖到窗口里，在设备旁点「发送」。优先走两台之间的直连线（比如插在 KVM 上的 USB 网卡），其次走共同的网络，传输中一条断了会在另一条上接着传（[文件互传](docs/file-sharing.zh-CN.md)）。
 
 ## 工作原理
 
@@ -96,17 +97,23 @@ hidutil property --set '{"UserKeyMapping":[]}'   # 手动清除所有键位映�
 
 拔下再插上键盘或鼠标，或者重启 Mac，同样会清除 Isthmus 设置的一切。
 
-每项设置与快捷键见[键盘与鼠标](docs/keyboard-and-mouse.zh-CN.md)；构建与运行应用见 [ui/README.md](ui/README.md)（英文）；改动记录见[更新日志](CHANGELOG.md)。
+**在 PC 上**，Windows 版提供文件互传（需要 Rust、Flutter 和 Visual Studio 的 C++ 工具，在 PowerShell 里）：
+
+```bash
+make build-ui-windows-release   # 先构建 isthmus_ffi.dll，再构建 Isthmus.exe
+```
+
+每项设置与快捷键见[键盘与鼠标](docs/keyboard-and-mouse.zh-CN.md)；配对与传文件见[文件互传](docs/file-sharing.zh-CN.md)；构建与运行应用见 [ui/README.md](ui/README.md)（英文）；改动记录见[更新日志](CHANGELOG.md)。
 
 ## 接下来
 
-键盘和鼠标只是第一部分。Isthmus 打算继续扩展：在局域网里发现你的其他电脑，用一个短配对码配对，在配对的设备之间共享文件，让同一块显示器在两套系统上看起来一致，以及用一套键盘鼠标操作多台电脑。这些都还没有实现；[路线图](docs/roadmap.md)（英文）描述了每一步以及它需要什么。
+键盘、鼠标和文件互传已经完成。接下来：让同一块显示器在两套系统上看起来一致，以及用一套键盘鼠标操作并排的两台电脑；[路线图](docs/roadmap.md)（英文）描述了每一步以及它需要什么。
 
 ## 文档
 
 | | |
 | --- | --- |
-| **使用** | [键盘与鼠标](docs/keyboard-and-mouse.zh-CN.md) · [更新日志](CHANGELOG.md) |
+| **使用** | [键盘与鼠标](docs/keyboard-and-mouse.zh-CN.md) · [文件互传](docs/file-sharing.zh-CN.md) · [更新日志](CHANGELOG.md) |
 | **应用** | [构建与运行](ui/README.md) |
 | **项目** | [架构](docs/architecture.md) · [路线图](docs/roadmap.md) · [Rust 工程指南](docs/rust-engineering-guide.md) |
 
@@ -114,7 +121,7 @@ hidutil property --set '{"UserKeyMapping":[]}'   # 手动清除所有键位映�
 
 ## 开发
 
-`crates/` 是 Rust workspace（`isthmus-core` 负责数据目录、状态文件和单实例锁，`isthmus-input` 是键盘鼠标服务，`isthmus-cli` 是 `isthmus` 命令），`ui/` 是 Flutter 应用及其 C ABI 和 macOS Runner，`scripts/` 是构建步骤。改动必须遵守的规则见 [AGENTS.md](AGENTS.md)。
+`crates/` 是 Rust workspace（`isthmus-core` 负责数据目录、状态文件和单实例锁，`isthmus-input` 是键盘鼠标服务，`isthmus-link` 负责发现、配对和传文件，`isthmus-cli` 是 `isthmus` 命令），`ui/` 是 Flutter 应用及其 C ABI 和 macOS、Windows 两个 Runner，`scripts/` 是构建步骤。改动必须遵守的规则见 [AGENTS.md](AGENTS.md)。
 
 ```bash
 make build-ui-macos-local   # Isthmus-local.app，拥有独立的辅助功能授权
