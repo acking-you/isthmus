@@ -6,7 +6,7 @@ publish_to: 'none'
 # The build-name matches Cargo.toml's workspace version. The build-number is an
 # independent, increasing package counter: rebuilds also consume a number, and
 # the next release must use a greater one.
-version: 0.1.1+2
+version: 0.1.2+3
 
 environment:
   sdk: ^3.14.0
