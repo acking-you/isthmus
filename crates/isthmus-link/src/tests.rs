@@ -58,7 +58,17 @@ impl Node {
 
     /// Waits until `ready` holds for this node's status.
     fn wait(&self, what: &str, ready: impl Fn(&LinkStatus) -> bool) -> LinkStatus {
-        let deadline = Instant::now() + STEP;
+        self.wait_for(what, STEP, ready)
+    }
+
+    /// [`Self::wait`], allowing `limit`.
+    fn wait_for(
+        &self,
+        what: &str,
+        limit: Duration,
+        ready: impl Fn(&LinkStatus) -> bool,
+    ) -> LinkStatus {
+        let deadline = Instant::now() + limit;
         loop {
             let status = self.service.status();
             if ready(&status) {
@@ -434,7 +444,9 @@ fn a_receiver_cancel_stops_the_sender() {
 
 /// A transfer whose receiver goes away mid-file says why it is retrying,
 /// carries on from where it stopped once the receiver is back, within
-/// seconds rather than a TCP timeout, and the file arrives whole.
+/// seconds rather than a TCP timeout, and the file arrives whole. The
+/// resume is what is timed; the rest of the file gets as long as a debug
+/// build on a slow runner needs.
 #[test]
 fn a_transfer_resumes_soon_after_its_receiver_comes_back() {
     let a = Node::new("resume-a");
@@ -458,16 +470,21 @@ fn a_transfer_resumes_soon_after_its_receiver_comes_back() {
     let retry = of(&retrying).unwrap().retry.unwrap();
     assert!(retry.attempt >= 1, "{retry:?}");
     let back = Instant::now();
-    let done = a.wait("the transfer to finish", |s| {
-        of(s).is_some_and(|t| t.state.is_finished())
+    a.wait("the transfer to resume", |s| {
+        of(s).is_some_and(|t| {
+            t.state.is_finished() || (t.state == TransferState::Running && t.retry.is_none())
+        })
     });
-    let transfer = of(&done).unwrap();
-    assert_eq!(transfer.state, TransferState::Done, "{transfer:?}");
     assert!(
         back.elapsed() < Duration::from_secs(15),
         "resumed after {:?}",
         back.elapsed()
     );
+    let done = a.wait_for("the transfer to finish", Duration::from_secs(180), |s| {
+        of(s).is_some_and(|t| t.state.is_finished())
+    });
+    let transfer = of(&done).unwrap();
+    assert_eq!(transfer.state, TransferState::Done, "{transfer:?}");
     assert_eq!(std::fs::read(b.receive.join("big.bin")).unwrap(), big);
 }
 
