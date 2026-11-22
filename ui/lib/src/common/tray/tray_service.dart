@@ -186,7 +186,12 @@ class TrayService with TrayListener {
     try {
       await _rendering;
       await _render();
-      await _call(_tray.popUpContextMenu);
+      // Windows dismisses a tray menu on an outside click only when its
+      // window is in front, so it is brought there first (a no-op on Mac).
+      await _call(
+        // ignore: deprecated_member_use
+        () => _tray.popUpContextMenu(bringAppToFront: Platform.isWindows),
+      );
     } finally {
       _menuOpen = false;
       final wanted = _wanted;

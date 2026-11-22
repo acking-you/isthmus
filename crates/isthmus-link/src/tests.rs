@@ -97,7 +97,18 @@ impl Node {
         } = self;
         drop(service);
         drop(changes);
-        let (service, changes, clipboard) = start(&data, &receive, Some(port));
+        // The old service's tasks may hold its lock a moment after it is
+        // dropped; the app's own retry on `AnotherInstance` does the same.
+        let deadline = Instant::now() + STEP;
+        let (service, changes, clipboard) = loop {
+            match try_start(&data, &receive, Some(port), PROTOCOL_VERSION) {
+                Ok(started) => break started,
+                Err(crate::Error::AnotherInstance) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(error) => panic!("the node did not restart: {error}"),
+            }
+        };
         Node {
             service,
             changes,
@@ -112,16 +123,21 @@ impl Node {
 /// A service, its change hints, and what it would put on the clipboard.
 type Started = (LinkService, mpsc::Receiver<()>, mpsc::Receiver<String>);
 
-fn start(data: &Path, receive: &Path, port: Option<u16>) -> Started {
-    start_speaking(data, receive, port, PROTOCOL_VERSION)
-}
-
 fn start_speaking(
     data: &Path,
     receive: &Path,
     port: Option<u16>,
     protocol_version: u32,
 ) -> Started {
+    try_start(data, receive, port, protocol_version).unwrap()
+}
+
+fn try_start(
+    data: &Path,
+    receive: &Path,
+    port: Option<u16>,
+    protocol_version: u32,
+) -> Result<Started, crate::Error> {
     let (tx, changes) = mpsc::channel();
     let (clipboard_tx, clipboard) = mpsc::channel();
     let service = LinkService::start(LinkOptions {
@@ -137,9 +153,8 @@ fn start_speaking(
         on_clipboard: Some(Arc::new(move |_, text| {
             let _ = clipboard_tx.send(text);
         })),
-    })
-    .unwrap();
-    (service, changes, clipboard)
+    })?;
+    Ok((service, changes, clipboard))
 }
 
 /// Pairs `a` (asking) with `b`, as a user would: both show the same code

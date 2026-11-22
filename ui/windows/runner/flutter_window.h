@@ -2,9 +2,12 @@
 #define RUNNER_FLUTTER_WINDOW_H_
 
 #include <flutter/dart_project.h>
+#include <flutter/encodable_value.h>
 #include <flutter/flutter_view_controller.h>
+#include <flutter/method_channel.h>
 
 #include <memory>
+#include <string>
 
 #include "win32_window.h"
 
@@ -28,6 +31,14 @@ class FlutterWindow : public Win32Window {
 
   // The Flutter instance hosted by this window.
   std::unique_ptr<flutter::FlutterViewController> flutter_controller_;
+
+  // "isthmus/notifier": notifications while the window waits in the
+  // notification area (ShowBalloon in flutter_window.cpp).
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
+      notifier_channel_;
+
+  // Shows a notification from the app's own notification-area icon.
+  bool ShowBalloon(const std::string& title, const std::string& body);
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_

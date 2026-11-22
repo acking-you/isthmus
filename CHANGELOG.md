@@ -3,6 +3,8 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+- On Windows the app no longer freezes after it went to the notification area. A clipboard copy crossing while the window was hidden posted a notification through local_notifier, which called Flutter from Windows' notification threads when the notification went away, and the app stopped answering for good. Notifications now come from Isthmus's own notification-area icon, posted on the right thread, and CI runs the Windows app through the tray with a notification in between.
+- On Windows the notification-area menu closes when you click elsewhere.
 
 ## [0.1.2] - 2026-11-22
 - Pairing is one click on the other computer: both show the same six digits and the other computer's user clicks Accept, with nothing to type. The digits come from the encrypted connection and from random values each side commits to before seeing the other's, so a machine in the middle cannot make them match; comparing them before accepting is what catches one. A computer still on 0.1 pairs by code as before.

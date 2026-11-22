@@ -72,12 +72,6 @@ flutter build macos --debug
 macOS grants Accessibility (and Local Network access) to the terminal, not
 to Isthmus; test permissions with the app opened from Finder or `open`.
 
-The macOS build uses CocoaPods for one plugin, `local_notifier`, which has
-no Swift package: `flutter build macos` runs `pod install` by itself (the
-`Podfile` and `Podfile.lock` are committed, `Pods/` is not). Isthmus uses
-`local_notifier` for Windows' toasts only; a Mac posts its notifications
-from `macos/Runner/Notifier.swift`.
-
 On Windows, from the repository root in PowerShell:
 
 ```bash

@@ -9,13 +9,13 @@
 /// ```
 library;
 
-import 'dart:async';
 import 'dart:io' show Platform;
 
 import 'package:flutter/scheduler.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:isthmus_ui/src/app.dart';
+import 'package:isthmus_ui/src/common/system_notice.dart';
 import 'package:isthmus_ui/src/common/tray/tray_service.dart';
 import 'package:isthmus_ui/src/shell/app_prefs.dart';
 import 'package:isthmus_ui/src/shell/window_chrome.dart';
@@ -79,6 +79,16 @@ void main() {
     await _until('the window to hide', () async {
       return !await windowManager.isVisible();
     });
+
+    // A clipboard copy crossing while hidden posts a notification, which
+    // Windows dismisses a few seconds later; 0.1.2's notifications froze
+    // the app at that dismissal.
+    await SystemNotice.show(
+      id: 'isthmus-clipboard',
+      title: 'Clipboard from Desk PC',
+      body: 'hello from the other computer',
+    );
+    await Future<void>.delayed(const Duration(seconds: 12));
 
     // What Windows sends for a left click on the tray icon.
     TrayService.instance.onTrayIconMouseDown();
