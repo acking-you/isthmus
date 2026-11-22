@@ -60,11 +60,12 @@ use tracing::{error, info, warn};
 use super::actions::{Actions, Submitted};
 use super::synth::{self, field};
 use super::{TapShared, TapSnapshot, TapStates};
+use crate::engine::drag_scroll::{self, MIDDLE_BUTTON};
 use crate::engine::keyboard::KeyboardEngine;
 use crate::engine::mouse::MouseEngine;
 use crate::engine::{
     Action, ButtonEvent, ButtonOutcome, Fate, KeyContext, KeyEvent, KeyOutcome, KeyPhase,
-    MouseContext, ScrollEvent, ScrollOutcome, Synth,
+    MiddleOutcome, MouseContext, ScrollEvent, ScrollOutcome, Synth,
 };
 use crate::keys::{Flags, KeyCode, kc};
 use crate::settings::MouseProfile;
@@ -791,6 +792,10 @@ struct TapCore {
     /// The switcher watchdog: idle until the keyboard engine needs ticks.
     tick_timer: Option<CFRetained<CFRunLoopTimer>>,
     tick_armed: bool,
+    /// The middle-button drag scroll: idle until a middle press is held,
+    /// then sixty times a second.
+    drag_timer: Option<CFRetained<CFRunLoopTimer>>,
+    drag_armed: bool,
     health_timer: Option<CFRetained<CFRunLoopTimer>>,
     /// The source synthetic keys are created from.
     source: Option<CFRetained<CGEventSource>>,
@@ -823,6 +828,8 @@ impl TapCore {
             restarts: RestartBudget::default(),
             tick_timer: None,
             tick_armed: false,
+            drag_timer: None,
+            drag_armed: false,
             health_timer: None,
             source: synth::event_source(),
             actions,
@@ -844,6 +851,22 @@ impl TapCore {
                 with_core(TapCore::on_health);
             });
         });
+        let drag = RcBlock::new(|_: *mut CFRunLoopTimer| {
+            guarded("the middle-button drag scroll", || {
+                with_core(TapCore::on_drag_tick);
+            });
+        });
+        // SAFETY: the default allocator; CF copies the valid block.
+        self.drag_timer = unsafe {
+            CFRunLoopTimer::with_handler(
+                None,
+                now + IDLE_SECONDS,
+                drag_scroll::TICK_SECONDS,
+                0,
+                0,
+                Some(&drag),
+            )
+        };
         // SAFETY: the default allocator; CF copies each valid block.
         self.tick_timer = unsafe {
             CFRunLoopTimer::with_handler(None, now + IDLE_SECONDS, TICK_SECONDS, 0, 0, Some(&tick))
@@ -862,7 +885,10 @@ impl TapCore {
         if self.health_timer.is_none() {
             error!("could not create the tap health timer");
         }
-        for timer in [&self.tick_timer, &self.health_timer].into_iter().flatten() {
+        for timer in [&self.tick_timer, &self.health_timer, &self.drag_timer]
+            .into_iter()
+            .flatten()
+        {
             self.run_loop.add_timer(Some(timer), common_modes());
         }
     }
@@ -971,10 +997,14 @@ impl TapCore {
             }
             CGEventType::ScrollWheel => self.on_scroll(proxy, event, &snapshot),
             CGEventType::OtherMouseDown | CGEventType::OtherMouseUp => {
-                self.on_button(ty, event, &snapshot)
+                self.on_button(proxy, ty, event, &snapshot)
             }
             CGEventType::LeftMouseDown | CGEventType::RightMouseDown => {
                 self.keyboard.note_pointer_activity();
+                // Another button while the middle one is held ends the drag
+                // scroll; the middle release then passes unmatched.
+                self.mouse.cancel_drag();
+                self.disarm_drag();
                 Answer::Pass
             }
             _ => Answer::Pass,
@@ -1092,6 +1122,7 @@ impl TapCore {
             profile: profile_of(snapshot, scroll.sender),
             app: snapshot.app,
             hid_profile: snapshot.hid_profile,
+            drag_scroll: snapshot.drag_scroll,
         };
         match self.mouse.scroll(&scroll, &cx) {
             ScrollOutcome::Pass => Answer::Pass,
@@ -1106,16 +1137,28 @@ impl TapCore {
         }
     }
 
-    /// A button 3-and-up event: buttons 4 and 5 go to the mouse engine.
-    fn on_button(&mut self, ty: CGEventType, event: &CGEvent, snapshot: &TapSnapshot) -> Answer {
+    /// A button 3-and-up event: the middle button and buttons 4 and 5 go to
+    /// the mouse engine.
+    fn on_button(
+        &mut self,
+        proxy: Proxy,
+        ty: CGEventType,
+        event: &CGEvent,
+        snapshot: &TapSnapshot,
+    ) -> Answer {
         let down = ty == CGEventType::OtherMouseDown;
         if down {
             self.keyboard.note_pointer_activity();
         }
         if !snapshot.mouse {
+            self.mouse.cancel_drag();
+            self.disarm_drag();
             return Answer::Pass;
         }
         let button = CGEvent::integer_value_field(Some(event), field::MOUSE_BUTTON_NUMBER);
+        if button == MIDDLE_BUTTON {
+            return self.on_middle(proxy, down, event, snapshot);
+        }
         if !is_side_button(button) {
             return Answer::Pass;
         }
@@ -1128,6 +1171,7 @@ impl TapCore {
             profile: profile_of(snapshot, sender_of(event)),
             app: snapshot.app,
             hid_profile: snapshot.hid_profile,
+            drag_scroll: snapshot.drag_scroll,
         };
         match self.mouse.button(&pressed, &cx) {
             ButtonOutcome::Pass => Answer::Pass,
@@ -1139,6 +1183,88 @@ impl TapCore {
                 Answer::Drop
             }
         }
+    }
+
+    /// A middle-button press or release: held, clicked late, or the end of
+    /// a drag scroll.
+    fn on_middle(
+        &mut self,
+        proxy: Proxy,
+        down: bool,
+        event: &CGEvent,
+        snapshot: &TapSnapshot,
+    ) -> Answer {
+        let point = CGEvent::location(Some(event));
+        let cx = MouseContext {
+            profile: profile_of(snapshot, sender_of(event)),
+            app: snapshot.app,
+            hid_profile: snapshot.hid_profile,
+            drag_scroll: snapshot.drag_scroll,
+        };
+        match self
+            .mouse
+            .middle(down, [point.x, point.y], monotonic_ns(), &cx)
+        {
+            MiddleOutcome::Pass => Answer::Pass,
+            MiddleOutcome::Hold => {
+                self.arm_drag();
+                Answer::Drop
+            }
+            MiddleOutcome::Drop => {
+                self.disarm_drag();
+                Answer::Drop
+            }
+            MiddleOutcome::Click { at } => {
+                self.disarm_drag();
+                for click in synth::middle_click(self.source.as_deref(), at) {
+                    proxy.post(&click);
+                }
+                Answer::Drop
+            }
+        }
+    }
+
+    /// The drag scroll's tick: scrolls toward the pointer while the middle
+    /// button is held and has moved.
+    fn on_drag_tick(&mut self) {
+        if self.stopped {
+            return;
+        }
+        if !self.mouse.drag_active() || !self.shared.snapshot().mouse {
+            self.mouse.cancel_drag();
+            self.disarm_drag();
+            return;
+        }
+        let Some(pointer) = synth::pointer_location() else {
+            return;
+        };
+        if let Some(pixels) = self.mouse.drag_tick(pointer, monotonic_ns())
+            && !synth::post_pixel_scroll(self.source.as_deref(), pixels)
+        {
+            warn!("could not create a drag-scroll event");
+        }
+    }
+
+    /// Starts the drag-scroll ticks when a middle press is held.
+    fn arm_drag(&mut self) {
+        if self.drag_armed {
+            return;
+        }
+        if let Some(timer) = &self.drag_timer {
+            timer.set_next_fire_date(CFAbsoluteTimeGetCurrent() + drag_scroll::TICK_SECONDS);
+            self.drag_armed = true;
+        }
+    }
+
+    /// Parks the drag-scroll ticks until the next middle press.
+    fn disarm_drag(&mut self) {
+        if !self.drag_armed {
+            return;
+        }
+        if let Some(timer) = &self.drag_timer {
+            timer.set_next_fire_date(CFAbsoluteTimeGetCurrent() + IDLE_SECONDS);
+        }
+        self.drag_armed = false;
     }
 
     /// macOS disabled the tap. Everything Isthmus holds is released (the
@@ -1267,9 +1393,13 @@ impl TapCore {
         self.stopped = true;
         self.release_held();
         self.detach();
-        for timer in [self.tick_timer.take(), self.health_timer.take()]
-            .into_iter()
-            .flatten()
+        for timer in [
+            self.tick_timer.take(),
+            self.health_timer.take(),
+            self.drag_timer.take(),
+        ]
+        .into_iter()
+        .flatten()
         {
             timer.invalidate();
         }
@@ -1280,6 +1410,8 @@ impl TapCore {
         let releases = self.keyboard.release_all();
         self.post_outside(&releases);
         self.disarm_tick();
+        self.mouse.cancel_drag();
+        self.disarm_drag();
     }
 
     /// Posts synthetic keys through the running callback's proxy, stamped

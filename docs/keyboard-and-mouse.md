@@ -274,6 +274,24 @@ gets its own profile; an unknown sender gets the defaults.
 Deltas are written in the order line, fixed, pixel: setting the line delta
 makes macOS recompute the other two.
 
+**Middle-button drag scrolling** (`mouse.middleDragScroll`, for every
+mouse; on with the Windows preset, off with the Mac one, and when never set,
+off with the Mac profile and on otherwise): holding the middle button and moving the
+mouse scrolls toward the pointer, as Windows autoscroll does. The press is
+held back until the pointer moves more than 6 points from where it went
+down; released before that, it was a click, and a middle press and release
+are sent at that spot, so a middle click still opens a link in a new tab or
+closes one. Past that, the tap posts a pixel scroll 60 times a second whose
+speed grows with the distance from the anchor beyond a 10-point dead zone,
+each axis on its own; releasing the button ends it. Another click or the
+tap being disabled ends it too. Windows' click-to-start mode is left out,
+because the same click must open a link and the tap cannot see what is
+under the pointer. Virtual machines, and apps that drag with the middle
+button themselves (Blender, Figma, Sketch, Autodesk and CAD apps, Unity,
+Unreal, Godot, KiCad, Affinity, Krita, GIMP, Inkscape), get the button
+untouched. The scroll goes to the window under the pointer, as a wheel's
+does.
+
 The Windows pointer gain is divided by the main display's panel pixels per
 point, because Windows moves the pointer in pixels and macOS in points: a
 2560-pixel panel shown as 2048 points gives 1.25, so speed 10 becomes a gain
@@ -306,6 +324,7 @@ both in one click:
 - **Mac** puts every keyboard in Mac style with the function keys System
   Settings sets and the Shift switch off, and gives every mouse the Mac profile, which leaves the
   wheel, the pointer and the side buttons as macOS has them and turns zoom
+  and middle-button drag scrolling
   off. It leaves the switch alone; with both sections Mac, Isthmus changes
   nothing.
 

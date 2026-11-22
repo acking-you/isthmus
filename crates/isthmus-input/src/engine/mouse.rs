@@ -19,8 +19,15 @@
 //! Side buttons become a back or forward swipe in apps that ignore them,
 //! and pass to the apps that handle them natively. A button's release
 //! follows its press, whatever changed in between.
+//!
+//! The middle button, held and dragged, scrolls as Windows autoscroll does
+//! ([`super::drag_scroll`]); a middle click without movement still clicks.
 
-use super::{ButtonEvent, ButtonOutcome, Chord, MouseContext, ScrollEvent, ScrollOutcome, Synth};
+use super::drag_scroll::{DragScroll, Release};
+use super::{
+    ButtonEvent, ButtonOutcome, Chord, MiddleOutcome, MouseContext, ScrollEvent, ScrollOutcome,
+    Synth,
+};
 use crate::context::AppClass;
 use crate::hidmap;
 use crate::keys::{Mods, kc};
@@ -36,11 +43,13 @@ pub const FORWARD_BUTTON: i64 = 4;
 const PIXELS_PER_LINE: i32 = 10;
 
 /// Mouse state that outlives one event: which side buttons were turned
-/// into navigation on the way down, so their release is swallowed too.
+/// into navigation on the way down, so their release is swallowed too, and
+/// the middle-button press held while it may be a click or a scroll.
 #[derive(Debug, Default)]
 pub struct MouseEngine {
     back_swiped: bool,
     forward_swiped: bool,
+    drag: DragScroll,
 }
 
 impl MouseEngine {
@@ -85,6 +94,52 @@ impl MouseEngine {
         } else {
             ScrollOutcome::Pass
         }
+    }
+
+    /// Decides one middle-button event at `at` (global points). A press is
+    /// held where drag scrolling applies: the setting is on, the app is not
+    /// a virtual machine (whose guest decides) and does not drag with the
+    /// middle button itself (Blender, Figma, CAD …).
+    pub fn middle(
+        &mut self,
+        down: bool,
+        at: [f64; 2],
+        now_ns: u64,
+        cx: &MouseContext<'_>,
+    ) -> MiddleOutcome {
+        if down {
+            let applies = cx.drag_scroll
+                && cx.app.class != AppClass::Passthrough
+                && !cx.app.traits.native_middle_drag;
+            if applies {
+                self.drag.press(at, now_ns);
+                return MiddleOutcome::Hold;
+            }
+            self.drag.cancel();
+            return MiddleOutcome::Pass;
+        }
+        match self.drag.release() {
+            Release::Pass => MiddleOutcome::Pass,
+            Release::Click { at } => MiddleOutcome::Click { at },
+            Release::Drop => MiddleOutcome::Drop,
+        }
+    }
+
+    /// A tick while the middle button is held: the pixels to scroll now,
+    /// vertical then horizontal, if any.
+    pub fn drag_tick(&mut self, pointer: [f64; 2], now_ns: u64) -> Option<[i32; 2]> {
+        self.drag.tick(pointer, now_ns)
+    }
+
+    /// Whether a middle press is held, so the tap must tick.
+    pub fn drag_active(&self) -> bool {
+        self.drag.active()
+    }
+
+    /// Ends a held middle press without a click: another button went down,
+    /// or the tap was disabled or switched off.
+    pub fn cancel_drag(&mut self) {
+        self.drag.cancel();
     }
 
     /// Decides one button 4 or 5 event.
@@ -199,7 +254,75 @@ mod tests {
             profile,
             app,
             hid_profile: hidmap::profile_for(app.class, true),
+            drag_scroll: true,
         }
+    }
+
+    /// A middle press is held in an ordinary app and released as a click
+    /// when it did not move; it passes untouched in a virtual machine, in
+    /// an app that drags with the middle button, and with the setting off.
+    #[test]
+    fn the_middle_button_is_held_only_where_drag_scrolling_applies() {
+        let profile = windows();
+        let mut engine = MouseEngine::new();
+        let standard = cx(&profile, app(AppClass::Standard));
+        assert_eq!(
+            engine.middle(true, [5.0, 6.0], 0, &standard),
+            MiddleOutcome::Hold
+        );
+        assert!(engine.drag_active());
+        assert_eq!(
+            engine.middle(false, [5.0, 6.0], 1, &standard),
+            MiddleOutcome::Click { at: [5.0, 6.0] }
+        );
+
+        let blender = AppProfile {
+            class: AppClass::Standard,
+            traits: AppTraits {
+                native_middle_drag: true,
+                ..AppTraits::default()
+            },
+        };
+        let mut off = cx(&profile, app(AppClass::Standard));
+        off.drag_scroll = false;
+        for context in [
+            cx(&profile, app(AppClass::Passthrough)),
+            cx(&profile, blender),
+            off,
+        ] {
+            let mut engine = MouseEngine::new();
+            assert_eq!(
+                engine.middle(true, [0.0, 0.0], 0, &context),
+                MiddleOutcome::Pass
+            );
+            assert!(!engine.drag_active());
+            assert_eq!(
+                engine.middle(false, [0.0, 0.0], 1, &context),
+                MiddleOutcome::Pass
+            );
+        }
+    }
+
+    /// A held press that moved scrolls on ticks and its release is
+    /// swallowed; cancelling ends it so the release passes.
+    #[test]
+    fn a_dragged_middle_press_scrolls_and_swallows_its_release() {
+        let profile = windows();
+        let context = cx(&profile, app(AppClass::Standard));
+        let mut engine = MouseEngine::new();
+        engine.middle(true, [0.0, 0.0], 0, &context);
+        let pixels = engine.drag_tick([0.0, 200.0], 40_000_000).unwrap();
+        assert!(pixels[0] < 0, "down scrolls down: {pixels:?}");
+        assert_eq!(
+            engine.middle(false, [0.0, 200.0], 50_000_000, &context),
+            MiddleOutcome::Drop
+        );
+        engine.middle(true, [0.0, 0.0], 0, &context);
+        engine.cancel_drag();
+        assert_eq!(
+            engine.middle(false, [0.0, 0.0], 1, &context),
+            MiddleOutcome::Pass
+        );
     }
 
     /// One notch of a wheel as macOS sends it, accelerated: up (away from

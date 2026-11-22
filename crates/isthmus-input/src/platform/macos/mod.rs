@@ -54,6 +54,8 @@ pub(crate) struct TapSnapshot {
     /// A lone Shift tap selects the previous input source: the setting is
     /// on and this user has an input method.
     pub shift_switches_input: bool,
+    /// Holding the middle button and moving the mouse scrolls.
+    pub drag_scroll: bool,
     /// The profile of a wheel event whose sender is not in `mouse_by_sender`.
     pub mouse_default: MouseProfile,
     /// Profiles by sending service registry id (CGEvent field 87).
@@ -71,6 +73,7 @@ impl Default for TapSnapshot {
             groups: ShortcutGroups::all(false),
             hotkeys: SystemHotkeys::default(),
             shift_switches_input: false,
+            drag_scroll: false,
             mouse_default: MouseProfile::MAC,
             mouse_by_sender: HashMap::new(),
         }

@@ -9,6 +9,7 @@
 //! The engine runs on the tap thread for every key and wheel event, so the
 //! pass-through path allocates nothing and takes no lock.
 
+pub mod drag_scroll;
 pub mod keyboard;
 pub mod mouse;
 mod rules;
@@ -312,6 +313,24 @@ pub struct MouseContext<'a> {
     pub profile: &'a MouseProfile,
     pub app: AppProfile,
     pub hid_profile: HidProfile,
+    /// Holding the middle button and moving the mouse scrolls (the
+    /// setting; the app decides on top of it).
+    pub drag_scroll: bool,
+}
+
+/// What becomes of a middle-button event.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MiddleOutcome {
+    Pass,
+    /// Swallow the press; it may be a click or a scroll, so tick until the
+    /// release.
+    Hold,
+    /// Swallow the release and send a middle click at this point instead.
+    Click {
+        at: [f64; 2],
+    },
+    /// Swallow the release that ended a scroll.
+    Drop,
 }
 
 #[cfg(test)]

@@ -53,6 +53,10 @@ pub struct AppTraits {
     pub office: bool,
     /// Finder: F2 renames, Alt+F4 closes the window.
     pub finder: bool,
+    /// Drags with the middle button itself (orbit, pan): Blender, Figma,
+    /// CAD and game engines ([`builtin::NATIVE_MIDDLE_DRAG`]), where holding
+    /// the middle button must not become scrolling.
+    pub native_middle_drag: bool,
 }
 
 /// An app's class and traits together.
@@ -154,6 +158,7 @@ fn builtin_traits(bundle_id: &str) -> AppTraits {
         vscode: in_list(builtin::VSCODE, bundle_id),
         office: in_list(builtin::OFFICE, bundle_id),
         finder: in_list(builtin::FINDER, bundle_id),
+        native_middle_drag: in_list(builtin::NATIVE_MIDDLE_DRAG, bundle_id),
     }
 }
 
@@ -269,6 +274,27 @@ pub mod builtin {
         "com.google.antigravity",
         "com.jetbrains.*",
         "com.google.android.studio",
+    ];
+
+    /// Apps that orbit, pan or draw with the middle button held.
+    pub const NATIVE_MIDDLE_DRAG: &[&str] = &[
+        "org.blenderfoundation.blender",
+        "com.figma.Desktop",
+        "com.bohemiancoding.sketch3",
+        "com.autodesk.*",
+        "com.sketchup.*",
+        "com.mcneel.rhinoceros*",
+        "org.freecad.FreeCAD",
+        "org.freecadweb.FreeCAD",
+        "net.maxon.cinema4d",
+        "com.unity3d.*",
+        "com.epicgames.*",
+        "org.godotengine.godot",
+        "org.kicad.*",
+        "com.seriflabs.*",
+        "org.krita",
+        "org.gimp.gimp-*",
+        "org.inkscape.Inkscape",
     ];
 
     /// The VS Code family.

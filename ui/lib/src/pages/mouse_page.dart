@@ -131,6 +131,14 @@ class _StyleCard extends StatelessWidget {
           ),
           const SizedBox(height: 10),
           _Quiet(l10n.mouseStyleHint),
+          const SizedBox(height: 8),
+          SwitchRow(
+            switchKey: const Key('mouse-middle-drag'),
+            title: l10n.middleDragTitle,
+            subtitle: l10n.middleDragHint,
+            value: store.settings.middleDragScroll,
+            onChanged: (on) => store.update((s) => s.withMiddleDragScroll(on)),
+          ),
         ],
       ),
     );

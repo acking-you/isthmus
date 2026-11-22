@@ -965,6 +965,7 @@ mod runtime {
             groups: settings.keyboard.groups,
             hotkeys,
             shift_switches_input: settings.keyboard.shift_switches_input && input_method,
+            drag_scroll: settings.mouse.drag_scroll(),
             mouse_default: settings.mouse.defaults,
             mouse_by_sender,
         }

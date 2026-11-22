@@ -367,5 +367,8 @@
 
   "shiftSwitchTitle": "Tap Shift alone to switch Chinese and English",
   "shiftSwitchHint": "Goes between your input method and ABC, as Shift does in a Windows IME. If your input method has its own Shift switch, turn one of the two off.",
-  "scShiftSwitchesInput": "Switch Chinese and English (tap alone)"
+  "scShiftSwitchesInput": "Switch Chinese and English (tap alone)",
+
+  "middleDragTitle": "Hold the middle button and move to scroll",
+  "middleDragHint": "Scrolls toward the pointer, faster the further it is, until you let go, as Windows autoscroll does. A middle click without moving still clicks; Blender, Figma, CAD apps and virtual machines keep the middle button to themselves."
 }

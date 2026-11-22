@@ -475,9 +475,24 @@ class Settings {
 
   /// The defaults' style, or Custom when a mouse of its own differs, as
   /// `MouseSettings::style` decides.
+  /// Holding the middle button and moving the mouse scrolls, as Windows
+  /// autoscroll does (`middleDragScroll`). Unset, it follows the defaults:
+  /// off with the Mac profile, on otherwise, as `MouseSettings::drag_scroll`.
+  bool get middleDragScroll => _bool(
+    _mouse['middleDragScroll'],
+    mouseDefaults.style != ProfileStyle.mac,
+  );
+
+  /// The profiles' common style when the middle-button scrolling agrees
+  /// with it, as `MouseSettings::style` decides.
   ProfileStyle get mouseStyle {
     final first = mouseDefaults.style;
-    return mouseDevices.every((d) => d.profile.style == first)
+    final agrees = switch (first) {
+      ProfileStyle.windows => middleDragScroll,
+      ProfileStyle.mac => !middleDragScroll,
+      ProfileStyle.custom => true,
+    };
+    return agrees && mouseDevices.every((d) => d.profile.style == first)
         ? first
         : ProfileStyle.custom;
   }
@@ -516,6 +531,9 @@ class Settings {
 
   Settings withShiftSwitchesInput(bool on) =>
       _edit((root) => _child(root, 'keyboard')['shiftSwitchesInput'] = on);
+
+  Settings withMiddleDragScroll(bool on) =>
+      _edit((root) => _child(root, 'mouse')['middleDragScroll'] = on);
 
   /// Keyboard [id]'s entry with the given fields changed, created from what
   /// the keyboard gets now when it has none, so making an entry for one
@@ -635,6 +653,7 @@ class Settings {
       (preset == Preset.windows ? MouseProfile.windows : MouseProfile.mac)
           .writeInto(_child(section, 'defaults'));
       section['devices'] = <Object?>[];
+      section['middleDragScroll'] = preset == Preset.windows;
     }
     if (preset == Preset.windows) root['enabled'] = true;
   });

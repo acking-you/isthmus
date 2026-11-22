@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:isthmus_ui/src/ffi/models.dart';
 import 'package:isthmus_ui/src/shell/app_scope.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -26,6 +27,20 @@ void main() {
     expect(api.saved, hasLength(1));
     expect((_section(api)['defaults']! as Map)['linesPerNotch'], 12);
     expect(find.text('12 lines'), findsOneWidget);
+    await finish(tester);
+  });
+
+  testWidgets('middle-button drag scrolling has its own switch', (
+    tester,
+  ) async {
+    final api = FakeIsthmusApi();
+    await pumpApp(tester, api, page: AppPage.mouse);
+    final drag = find.byKey(const Key('mouse-middle-drag'));
+    expect(tester.widget<Switch>(drag).value, isTrue);
+    await tester.tap(drag);
+    await settle(tester);
+    expect(api.saved.last['mouse'], containsPair('middleDragScroll', false));
+    expect(api.stored.mouseStyle, ProfileStyle.custom);
     await finish(tester);
   });
 

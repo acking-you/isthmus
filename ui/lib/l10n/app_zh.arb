@@ -336,5 +336,8 @@
 
   "shiftSwitchTitle": "单独按 Shift 切换中英文",
   "shiftSwitchHint": "在输入法和 ABC 之间切换，和 Windows 输入法里单按 Shift 一样。如果输入法自己也开了 Shift 切换，请关掉其中一个。",
-  "scShiftSwitchesInput": "切换中英文（单独按一下）"
+  "scShiftSwitchesInput": "切换中英文（单独按一下）",
+
+  "middleDragTitle": "按住中键移动鼠标来滚动",
+  "middleDragHint": "朝指针方向滚动，离得越远越快，松开即停，和 Windows 的自动滚动一样。不移动的中键单击仍是单击；Blender、Figma、CAD 类应用和虚拟机里的中键保持原样。"
 }

@@ -245,6 +245,13 @@ pub struct MouseSettings {
     pub defaults: MouseProfile,
     /// Per-mouse profiles, keyed by [`crate::device::DeviceId`].
     pub devices: Vec<MouseDeviceSettings>,
+    /// Holding the middle button and moving the mouse scrolls, as Windows
+    /// autoscroll does; a middle click without movement still clicks.
+    /// `None`, as in a file from before it existed, follows the defaults:
+    /// off with the Mac profile, on otherwise, so neither style changes
+    /// under the user ([`Self::drag_scroll`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub middle_drag_scroll: Option<bool>,
     /// Keys a newer version wrote in this section, kept so this one does not
     /// delete them.
     #[serde(flatten)]
@@ -257,6 +264,7 @@ impl Default for MouseSettings {
             enabled: true,
             defaults: MouseProfile::WINDOWS,
             devices: Vec::new(),
+            middle_drag_scroll: None,
             unknown: Map::new(),
         }
     }
@@ -536,11 +544,26 @@ impl MouseSettings {
             Preset::Mac => MouseProfile::MAC,
         };
         self.devices.clear();
+        self.middle_drag_scroll = Some(preset == Preset::Windows);
     }
 
+    /// Whether holding the middle button scrolls: the setting, or when it
+    /// was never set, everything but the Mac profile.
+    pub fn drag_scroll(&self) -> bool {
+        self.middle_drag_scroll
+            .unwrap_or(self.defaults.style() != ProfileStyle::Mac)
+    }
+
+    /// The profiles' common style, when the middle-button scrolling agrees
+    /// with it; Custom otherwise.
     pub fn style(&self) -> ProfileStyle {
         let first = self.defaults.style();
-        if self.devices.iter().all(|d| d.profile.style() == first) {
+        let agrees = match first {
+            ProfileStyle::Windows => self.drag_scroll(),
+            ProfileStyle::Mac => !self.drag_scroll(),
+            ProfileStyle::Custom => true,
+        };
+        if agrees && self.devices.iter().all(|d| d.profile.style() == first) {
             first
         } else {
             ProfileStyle::Custom
@@ -773,6 +796,32 @@ mod tests {
         assert_eq!(settings.keyboard.style(), ProfileStyle::Custom);
         let json = serde_json::to_value(&settings).unwrap();
         assert_eq!(json["keyboard"]["shiftSwitchesInput"], false);
+    }
+
+    /// In a file written before it existed, middle-button drag scrolling
+    /// follows the mouse's style (on for Windows, off for Mac), so neither
+    /// reads as Custom; once set it follows the presets, and disagreeing
+    /// with the profile makes the mouse Custom.
+    #[test]
+    fn middle_drag_scroll_follows_the_style_until_set() {
+        let old = Settings::from_json(r#"{"mouse": {"enabled": true}}"#).unwrap();
+        assert!(old.mouse.drag_scroll());
+        assert_eq!(old.mouse.style(), ProfileStyle::Windows);
+        let mut old_mac = old.clone();
+        old_mac.mouse.defaults = MouseProfile::MAC;
+        assert!(!old_mac.mouse.drag_scroll());
+        assert_eq!(old_mac.mouse.style(), ProfileStyle::Mac);
+
+        let mut settings = Settings::default();
+        settings.mouse.middle_drag_scroll = Some(false);
+        assert_eq!(settings.mouse.style(), ProfileStyle::Custom);
+        settings.apply_preset(Preset::Mac, PresetTarget::Mouse);
+        assert!(!settings.mouse.drag_scroll());
+        assert_eq!(settings.mouse.style(), ProfileStyle::Mac);
+        settings.apply_preset(Preset::Windows, PresetTarget::Mouse);
+        assert!(settings.mouse.drag_scroll());
+        let json = serde_json::to_value(&settings).unwrap();
+        assert_eq!(json["mouse"]["middleDragScroll"], true);
     }
 
     /// A mouse preset becomes every mouse's profile: the per-mouse entries go.

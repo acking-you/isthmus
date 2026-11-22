@@ -10,10 +10,10 @@
 //! ([`KeyPlan`], [`SwipePlan`]) that the tests pin; the `CGEvent` calls around
 //! them stay a thin shell.
 
-use objc2_core_foundation::CFRetained;
+use objc2_core_foundation::{CFRetained, CGPoint};
 use objc2_core_graphics::{
     CGEvent, CGEventField, CGEventFlags, CGEventSource, CGEventSourceStateID, CGEventTapLocation,
-    CGEventType,
+    CGEventType, CGMouseButton, CGScrollEventUnit,
 };
 
 use super::ISTHMUS_TAG;
@@ -248,6 +248,50 @@ fn gesture_event(writes: &[(CGEventField, i64)]) -> Option<CFRetained<CGEvent>> 
     }
     tag(&event);
     Some(event)
+}
+
+/// The pointer's position in global points (origin top left), read from a
+/// fresh event; `None` if none could be made.
+pub(crate) fn pointer_location() -> Option<[f64; 2]> {
+    let event = CGEvent::new(None)?;
+    let point = CGEvent::location(Some(&event));
+    Some([point.x, point.y])
+}
+
+/// The press and the release of a middle click at `at`, tagged: the click
+/// a held middle press turned out to be.
+pub(crate) fn middle_click(
+    source: Option<&CGEventSource>,
+    at: [f64; 2],
+) -> Vec<CFRetained<CGEvent>> {
+    let point = CGPoint::new(at[0], at[1]);
+    [CGEventType::OtherMouseDown, CGEventType::OtherMouseUp]
+        .into_iter()
+        .filter_map(|ty| {
+            let event = CGEvent::new_mouse_event(source, ty, point, CGMouseButton::Center)?;
+            tag(&event);
+            Some(event)
+        })
+        .collect()
+}
+
+/// Posts a tagged pixel scroll, vertical then horizontal, at the HID
+/// location: a step of a middle-button drag scroll. Answers whether it was
+/// posted.
+pub(crate) fn post_pixel_scroll(source: Option<&CGEventSource>, pixels: [i32; 2]) -> bool {
+    let Some(event) = CGEvent::new_scroll_wheel_event2(
+        source,
+        CGScrollEventUnit::Pixel,
+        2,
+        pixels[0],
+        pixels[1],
+        0,
+    ) else {
+        return false;
+    };
+    tag(&event);
+    CGEvent::post(CGEventTapLocation::HIDEventTap, Some(&event));
+    true
 }
 
 /// Creates the began and ended events of a navigation swipe.
