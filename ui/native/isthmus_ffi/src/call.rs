@@ -21,6 +21,7 @@ use crate::error::CtlError;
 use crate::handle::IsthmusHandle;
 use crate::host::{Host, Shutdown};
 use crate::response::{Reply, parse_c_string, respond};
+use crate::update;
 
 /// A request, parsed and validated: one variant per row of the ops table in
 /// docs/architecture.md, carrying that op's arguments.
@@ -66,6 +67,16 @@ enum Op {
     /// Show a received transfer (or, without an id, the receive folder) in
     /// the file manager.
     LinkReveal(Option<String>),
+    /// Keep-awake's choice and whether it is in effect.
+    AwakeStatus,
+    /// Turn keeping the computer awake on or off.
+    AwakeSet(bool),
+    /// Whether a release manifest carries the release key's signature.
+    UpdateVerify {
+        key: ed25519_dalek::VerifyingKey,
+        message: Vec<u8>,
+        signature: Vec<u8>,
+    },
 }
 
 impl Op {
@@ -112,6 +123,19 @@ impl Op {
             "link_transfers_clear" => Op::LinkTransfersClear,
             "link_rename" => Op::LinkRename(arg(&request, name, "name")?),
             "link_reveal" => Op::LinkReveal(optional_arg(&request, "id")?),
+            "awake_status" => Op::AwakeStatus,
+            "awake_set" => Op::AwakeSet(arg(&request, name, "enabled")?),
+            "update_verify" => {
+                let bytes = |field: &str| -> Result<Vec<u8>, CtlError> {
+                    let text: String = arg(&request, name, field)?;
+                    update::decode(field, &text)
+                };
+                Op::UpdateVerify {
+                    key: update::public_key(&bytes("publicKey")?)?,
+                    message: bytes("message")?,
+                    signature: bytes("signature")?,
+                }
+            }
             other => {
                 return Err(CtlError::invalid_argument(format!("unknown op `{other}`")));
             }
@@ -136,8 +160,8 @@ fn optional_arg<T: DeserializeOwned>(request: &Value, name: &str) -> Result<Opti
     }
 }
 
-/// Runs `op` against `host`. Every op but `start` and `shutdown` needs the
-/// service running.
+/// Runs `op` against `host`. Every op but `start`, `shutdown` and
+/// `update_verify` needs the service running.
 fn run(host: &Host, op: Op) -> Result<Reply, CtlError> {
     match op {
         Op::Start => Reply::data(host.start()?.status()),
@@ -227,6 +251,15 @@ fn run(host: &Host, op: Op) -> Result<Reply, CtlError> {
                 .map_err(CtlError::from_link)?;
             Ok(Reply::Message("shown".into()))
         }
+        Op::AwakeStatus => Reply::data(host.awake()?.status()),
+        Op::AwakeSet(enabled) => {
+            Reply::data(host.awake()?.set(enabled).map_err(CtlError::from_awake)?)
+        }
+        Op::UpdateVerify {
+            key,
+            message,
+            signature,
+        } => Reply::data(json!({ "valid": update::verify(&key, &message, &signature) })),
         Op::Shutdown => Ok(Reply::Message(
             match host.shutdown() {
                 Shutdown::Stopped => "Isthmus stopped and put everything back",
@@ -268,7 +301,9 @@ mod tests {
     use super::*;
     use crate::error::ErrorCode;
     use crate::handle::{isthmus_create, isthmus_destroy};
-    use crate::test_support::{FakeLink, FakeService, host_with, host_with_link, take_reply};
+    use crate::test_support::{
+        FakeAwake, FakeLink, FakeService, host_with, host_with_link, host_with_parts, take_reply,
+    };
 
     /// Calls the export as Dart does, with a handle on `handle`'s host.
     fn call(handle: *mut IsthmusHandle, request: &str) -> Value {
@@ -314,6 +349,11 @@ mod tests {
             r#"{"op": "link_send", "peerId": "0123456789abcdef", "paths": "a"}"#,
             r#"{"op": "link_pair_code", "code": 123456}"#,
             r#"{"op": "link_reveal", "id": 5}"#,
+            r#"{"op": "awake_set"}"#,
+            r#"{"op": "awake_set", "enabled": 1}"#,
+            r#"{"op": "update_verify", "message": "", "signature": ""}"#,
+            r#"{"op": "update_verify", "message": "!", "signature": "", "publicKey": "LxkcyLr5tYLTchPoLCqIE1Jl3lylRM3/SAZ6wZ+6no8="}"#,
+            r#"{"op": "update_verify", "message": "", "signature": "", "publicKey": "AAAA"}"#,
         ] {
             let reply = call(handle, request);
             assert_eq!(reply["success"], false, "{request}");
@@ -353,6 +393,8 @@ mod tests {
             r#"{"op": "login_item_set", "enabled": true}"#,
             r#"{"op": "link_status"}"#,
             r#"{"op": "link_transfers_clear"}"#,
+            r#"{"op": "awake_status"}"#,
+            r#"{"op": "awake_set", "enabled": true}"#,
         ] {
             let reply = call(handle, request);
             assert_eq!(reply["success"], false, "{request}");
@@ -560,6 +602,52 @@ mod tests {
         assert_eq!(reply["code"], "INTERNAL");
         fake.panic_on_status.store(false, Ordering::SeqCst);
         assert_eq!(call(handle, r#"{"op": "status"}"#)["success"], true);
+        destroy(handle);
+    }
+
+    /// The awake ops reach keep-awake and answer with its status; the quit
+    /// lets go of the request.
+    #[test]
+    fn the_awake_ops_reach_keep_awake() {
+        let awake = Arc::new(FakeAwake::default());
+        let (host, _) = host_with_parts(
+            Arc::new(FakeService::default()),
+            Ok(Arc::new(FakeLink::default())),
+            awake.clone(),
+        );
+        let handle = Box::into_raw(Box::new(IsthmusHandle::new(host)));
+        call(handle, r#"{"op": "start"}"#);
+        let status = call(handle, r#"{"op": "awake_status"}"#);
+        assert_eq!(status["data"]["enabled"], false, "{status}");
+        let on = call(handle, r#"{"op": "awake_set", "enabled": true}"#);
+        assert_eq!(on["data"]["enabled"], true, "{on}");
+        assert_eq!(on["data"]["active"], true, "{on}");
+        assert!(awake.enabled.load(Ordering::SeqCst));
+        call(handle, r#"{"op": "shutdown"}"#);
+        assert_eq!(awake.shutdowns.load(Ordering::SeqCst), 1);
+        destroy(handle);
+    }
+
+    /// The signature check needs no service: on the process's real handle,
+    /// never started, it answers whether the signature holds.
+    #[test]
+    fn update_verify_answers_without_the_service() {
+        let handle = isthmus_create();
+        let request = |message: &str| {
+            format!(
+                r#"{{"op": "update_verify", "publicKey": "LxkcyLr5tYLTchPoLCqIE1Jl3lylRM3/SAZ6wZ+6no8=", "message": "{message}", "signature": "8vQ6kYlaBYhrJTFbeSHGXaaTZctQLJpP2qc45kzdGcPqCSgTi+cyxillCpBek3jEiil7IC6pncii43sIa+XXBg=="}}"#
+            )
+        };
+        let good = call(
+            handle,
+            &request("eyJ2ZXJzaW9uIjoiMC4xLjAiLCJhc3NldHMiOltdfQo="),
+        );
+        assert_eq!(good["data"]["valid"], true, "{good}");
+        let bad = call(
+            handle,
+            &request("eyJ2ZXJzaW9uIjoiMC45LjAiLCJhc3NldHMiOltdfQo="),
+        );
+        assert_eq!(bad["data"]["valid"], false, "{bad}");
         destroy(handle);
     }
 }

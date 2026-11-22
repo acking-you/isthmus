@@ -42,13 +42,16 @@ isthmus/
 │   │   │   ├── service/       # LinkService: connect race, sessions, pair, send, receive
 │   │   │   └── platform/      # computer name, Downloads, reveal, socket pinning (macOS, Windows)
 │   │   └── examples/peer.rs   # a second device in a terminal
+│   ├── isthmus-awake/         # keeping the computer awake while the screen sleeps (awake.json, one power request)
 │   └── isthmus-cli/           # the `isthmus` command: devices, status, settings, preset, run, restore, inspect
 ├── ui/                        # the Flutter app
 │   ├── native/isthmus_ffi/    # the C ABI the app calls
 │   ├── macos/                 # the Runner: menu-bar agent, quit hook, single instance
-│   └── windows/               # the Windows runner: Isthmus.exe beside isthmus_ffi.dll
+│   └── windows/               # the Windows runner: Isthmus.exe beside isthmus_ffi.dll; packaging/ for the installer
 ├── docs/                      # these pages; docs/README.md indexes them
-└── scripts/build/             # stage the FFI library for Xcode and for Windows
+└── scripts/
+    ├── build/                 # stage the FFI library for Xcode and for Windows
+    └── release/               # the DMG, the update manifest and its key (docs/updates.md)
 ```
 
 Dependencies point one way:
@@ -57,7 +60,8 @@ Dependencies point one way:
 isthmus-cli ───► isthmus-input ─┐
                                 ├─► isthmus-core
 isthmus-ffi ─┬─► isthmus-input ─┤
-             └─► isthmus-link ──┘
+             ├─► isthmus-link ──┤
+             └─► isthmus-awake ─┘
 ```
 
 Later features (display alignment, keyboard and mouse across devices)
@@ -134,6 +138,9 @@ client interface, its implementation and the test fake.
 | `link_transfers_clear` | – | message (finished transfers dropped) |
 | `link_rename` | `name` | `LinkStatus` |
 | `link_reveal` | `id`? | message (the transfer's files, or the receive folder, in Finder or Explorer) |
+| `awake_status` | – | `AwakeStatus` (`enabled`, `active`, `supported`, `error`?) |
+| `awake_set` | `enabled` | `AwakeStatus` |
+| `update_verify` | `message`, `signature`, `publicKey` (base64) | `{"valid": bool}` (Ed25519, strict; needs no running service) |
 
 The JSON shapes are the serde forms of the Rust types in
 [`settings.rs`](../crates/isthmus-input/src/settings.rs),
@@ -141,9 +148,9 @@ The JSON shapes are the serde forms of the Rust types in
 [`context.rs`](../crates/isthmus-input/src/context.rs) and
 [`device.rs`](../crates/isthmus-input/src/device.rs) and
 [`isthmus-link/src/status.rs`](../crates/isthmus-link/src/status.rs), all
-camelCase. File sharing starts with the service; if it cannot (another
-copy holds `link.lock`, no port), the keyboard and mouse run on and the
-`link_*` ops answer with that failure.
+camelCase. File sharing and keep-awake start with the service; if one
+cannot (another copy holds `link.lock`, an unreadable `awake.json`), the
+keyboard and mouse run on and its ops answer with that failure.
 
 Error codes: `INVALID_ARGUMENT`, `NOT_RUNNING`, `ANOTHER_INSTANCE`,
 `PERMISSION_MISSING`, `UNSUPPORTED`, `IO`, `BUSY` (another pairing is in
@@ -157,14 +164,18 @@ API and its models), `state/` (`AppStore`, one `ChangeNotifier` every page
 reads), `shell/` (navigation rail, page frame, window chrome), `pages/`
 (overview, keyboard, mouse, devices, settings), `theme/` (colours, type,
 metrics, motion, `AppIcons`), `widgets/`, `common/` (l10n, tray, the
-window-wide file drop target). `state/link_store.dart` holds file sharing's
-snapshot and the files waiting to be sent. The Runner (`ui/macos/Runner`)
+window-wide file drop target), `updates/` (the update check, its dialog
+and each platform's installer: [updates.md](updates.md)).
+`state/link_store.dart` holds file sharing's snapshot and the files waiting
+to be sent. The Runner (`ui/macos/Runner`)
 makes the app a menu-bar agent (`LSUIElement`), keeps a single instance,
 routes SIGTERM to AppKit, and calls `isthmus_shutdown` from
 `applicationWillTerminate`; its Info.plist declares the Local Network use
 and the `_isthmus._tcp` service. On Windows (`ui/windows`) the app shows
 the Devices and Settings pages only, keeps the native title bar, and lives
-in the notification area.
+in the notification area; `ui/windows/packaging` and
+`ui/distribute_options.yaml` make its installer with fastforge and Inno
+Setup.
 
 ## Development workflow
 

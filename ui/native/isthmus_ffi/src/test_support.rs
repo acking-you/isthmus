@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use isthmus_awake::{AwakeStatus, Error as AwakeError};
 use isthmus_input::context::FrontApp;
 use isthmus_input::hidmap::HidProfile;
 use isthmus_input::status::{
@@ -20,7 +21,7 @@ use isthmus_link::{DeviceId, Error as LinkError, LinkStatus};
 use parking_lot::Mutex;
 
 use crate::error::CtlError;
-use crate::host::{Host, Link, Service};
+use crate::host::{Awake, Host, Link, Service};
 
 /// A service that keeps its settings in memory and records what it was
 /// asked, with switches for the failures a test needs.
@@ -226,6 +227,34 @@ impl Link for FakeLink {
     }
 }
 
+/// Keep-awake that only remembers the choice, and how often it was let go.
+#[derive(Default)]
+pub(crate) struct FakeAwake {
+    pub enabled: AtomicBool,
+    pub shutdowns: AtomicUsize,
+}
+
+impl Awake for FakeAwake {
+    fn status(&self) -> AwakeStatus {
+        let enabled = self.enabled.load(Ordering::SeqCst);
+        AwakeStatus {
+            enabled,
+            active: enabled,
+            supported: true,
+            error: None,
+        }
+    }
+
+    fn set(&self, enabled: bool) -> Result<AwakeStatus, AwakeError> {
+        self.enabled.store(enabled, Ordering::SeqCst);
+        Ok(self.status())
+    }
+
+    fn shutdown(&self) {
+        self.shutdowns.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
 /// A host whose starter hands out `fake`, and the number of starts it made.
 /// Leaked, as the process's own host lives for the whole process.
 pub(crate) fn host_with(fake: Arc<FakeService>) -> (&'static Host, Arc<AtomicUsize>) {
@@ -236,6 +265,15 @@ pub(crate) fn host_with(fake: Arc<FakeService>) -> (&'static Host, Arc<AtomicUsi
 pub(crate) fn host_with_link(
     fake: Arc<FakeService>,
     link: Result<Arc<FakeLink>, CtlError>,
+) -> (&'static Host, Arc<AtomicUsize>) {
+    host_with_parts(fake, link, Arc::new(FakeAwake::default()))
+}
+
+/// [`host_with_link`], with `awake` for keeping the computer awake.
+pub(crate) fn host_with_parts(
+    fake: Arc<FakeService>,
+    link: Result<Arc<FakeLink>, CtlError>,
+    awake: Arc<FakeAwake>,
 ) -> (&'static Host, Arc<AtomicUsize>) {
     let starts = Arc::new(AtomicUsize::new(0));
     let counted = starts.clone();
@@ -258,6 +296,10 @@ pub(crate) fn host_with_link(
             Ok(service)
         }),
         link_starter,
+        Box::new(move || {
+            let awake: Arc<dyn Awake> = awake.clone();
+            Ok(awake)
+        }),
     );
     (Box::leak(Box::new(host)), starts)
 }

@@ -11,6 +11,7 @@
 
 use std::fmt;
 
+use isthmus_awake::Error as AwakeError;
 use isthmus_input::Error as ServiceError;
 use isthmus_link::Error as LinkError;
 use serde::Serialize;
@@ -93,6 +94,28 @@ impl CtlError {
         let code = link_code(&error);
         tracing::warn!(?code, error = %chain(&error), "a file sharing operation failed");
         Self::new(code, error.to_string())
+    }
+
+    /// A keep-awake failure, with the code [`awake_code`] gives it.
+    pub fn from_awake(error: AwakeError) -> Self {
+        let code = awake_code(&error);
+        tracing::warn!(?code, error = %chain(&error), "a keep-awake operation failed");
+        Self::new(code, error.to_string())
+    }
+}
+
+/// The code for each of keep-awake's failures: its file is `IO`, a system
+/// without the feature `UNSUPPORTED`, a quit `NOT_RUNNING`, and a system
+/// that refused the request `INTERNAL`, with the system's reason in the
+/// sentence.
+pub fn awake_code(error: &AwakeError) -> ErrorCode {
+    match error {
+        AwakeError::ReadSettings { .. }
+        | AwakeError::ParseSettings { .. }
+        | AwakeError::WriteSettings { .. } => ErrorCode::Io,
+        AwakeError::Unsupported => ErrorCode::Unsupported,
+        AwakeError::Refused { .. } => ErrorCode::Internal,
+        AwakeError::ShutDown => ErrorCode::NotRunning,
     }
 }
 

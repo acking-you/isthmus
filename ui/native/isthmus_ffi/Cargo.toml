@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "The C ABI the Flutter app calls: one JSON operation export over isthmus-input and isthmus-link"
+description = "The C ABI the Flutter app calls: one JSON operation export over isthmus-input, isthmus-link and isthmus-awake"
 publish = false
 
 [lib]
@@ -16,6 +16,9 @@ crate-type = ["cdylib", "staticlib"]
 workspace = true
 
 [dependencies]
+base64.workspace = true
+ed25519-dalek.workspace = true
+isthmus-awake.workspace = true
 isthmus-core.workspace = true
 isthmus-input.workspace = true
 isthmus-link.workspace = true

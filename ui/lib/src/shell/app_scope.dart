@@ -4,6 +4,7 @@ import 'package:isthmus_ui/src/common/l10n_extension.dart';
 import 'package:isthmus_ui/src/shell/app_prefs.dart';
 import 'package:isthmus_ui/src/state/app_store.dart';
 import 'package:isthmus_ui/src/theme/app_icons.dart';
+import 'package:isthmus_ui/src/updates/update_controller.dart';
 
 /// Whether this system has the keyboard and mouse pages: a Mac does, a PC
 /// does not. Keyed on [defaultTargetPlatform], like the window chrome, so
@@ -63,6 +64,7 @@ class AppScope extends InheritedWidget {
     super.key,
     required this.store,
     required this.prefs,
+    required this.updates,
     required this.page,
     required this.go,
     required super.child,
@@ -70,6 +72,9 @@ class AppScope extends InheritedWidget {
 
   final AppStore store;
   final AppPrefs prefs;
+
+  /// Checking for, and installing, a newer release.
+  final UpdateController updates;
 
   /// The page on screen.
   final AppPage page;
@@ -85,5 +90,8 @@ class AppScope extends InheritedWidget {
 
   @override
   bool updateShouldNotify(AppScope old) =>
-      old.store != store || old.prefs != prefs || old.page != page;
+      old.store != store ||
+      old.prefs != prefs ||
+      old.updates != updates ||
+      old.page != page;
 }

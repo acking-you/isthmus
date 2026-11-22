@@ -19,6 +19,7 @@ lib/
     ├── pages/             # overview, keyboard, mouse, devices, settings
     ├── theme/             # colours, type, radii, motion, glass, AppIcons (Lucide only)
     ├── widgets/           # surfaces, status chips, keycaps, setting rows, brand mark
+    ├── updates/           # the update check, its dialog, each platform's installer (docs/updates.md)
     └── common/            # l10n, locale, toasts, tray, the window-wide file drop
 ```
 

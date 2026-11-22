@@ -26,6 +26,16 @@ build-ui-macos-release build-ui-macos-release-no-ffi:
 build-isthmus-ffi-windows:
 	pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build/isthmus-ffi-windows.ps1
 
+# The Windows installer and portable zip in ui/dist/ (fastforge, with Inno
+# Setup 6 installed), from the FFI library already staged; the release
+# workflow runs the same steps.
+release-ui-windows-no-ffi:
+	cd ui && flutter clean
+	cd ui && dart pub global activate fastforge
+	cd ui && flutter pub get
+	cd ui && dart pub global run fastforge:main release --name production
+release-ui-windows: build-isthmus-ffi-windows release-ui-windows-no-ffi
+
 # Build the Windows release app with the FFI library staged.
 build-ui-windows-release: build-isthmus-ffi-windows
 	cd ui && flutter pub get
@@ -48,5 +58,7 @@ build-isthmus-cli:
 	build-ui-macos-release-no-ffi \
 	build-isthmus-ffi-windows \
 	build-ui-windows-release \
+	release-ui-windows \
+	release-ui-windows-no-ffi \
 	check-windows \
 	build-isthmus-cli

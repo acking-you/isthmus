@@ -19,6 +19,7 @@ mod logging;
 mod response;
 #[cfg(test)]
 mod test_support;
+mod update;
 
 // The C surface the app looks up. `no_mangle` exports each symbol either way;
 // listed here, every one is in one place.

@@ -10,13 +10,16 @@ import 'package:isthmus_ui/src/shell/page_frame.dart';
 import 'package:isthmus_ui/src/state/app_store.dart';
 import 'package:isthmus_ui/src/theme/app_icons.dart';
 import 'package:isthmus_ui/src/theme/glass.dart';
+import 'package:isthmus_ui/src/updates/update_controller.dart';
+import 'package:isthmus_ui/src/updates/update_dialog.dart';
 import 'package:isthmus_ui/src/widgets/brand_mark.dart';
 import 'package:isthmus_ui/src/widgets/setting_rows.dart';
 import 'package:isthmus_ui/src/widgets/surfaces.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
-/// The app itself: opening at login, its language, putting everything back,
-/// the System Settings panes it depends on, and what it is.
+/// The app itself: opening at login, keeping the computer awake, its
+/// language, putting everything back and the System Settings panes it
+/// depends on (on a Mac), and what it is, with its updates.
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key});
 
@@ -33,11 +36,17 @@ class SettingsPage extends StatelessWidget {
           children: [
             _GeneralCard(store: scope.store, prefs: scope.prefs),
             const SizedBox(height: 16),
-            _RestoreCard(store: scope.store),
-            const SizedBox(height: 16),
-            _PanesCard(store: scope.store),
-            const SizedBox(height: 16),
-            _AboutCard(store: scope.store),
+            if (hasInputPages) ...[
+              _RestoreCard(store: scope.store),
+              const SizedBox(height: 16),
+              _PanesCard(store: scope.store),
+              const SizedBox(height: 16),
+            ],
+            _AboutCard(
+              store: scope.store,
+              prefs: scope.prefs,
+              updates: scope.updates,
+            ),
             const SizedBox(height: 16),
             GroupCard(
               key: const Key('settings-coming-next'),
@@ -57,7 +66,8 @@ class SettingsPage extends StatelessWidget {
   }
 }
 
-/// Opening at login and the language: the app's own two choices.
+/// Opening at login, keeping the computer awake, and the language: the app's
+/// own choices.
 class _GeneralCard extends StatelessWidget {
   const _GeneralCard({required this.store, required this.prefs});
 
@@ -88,6 +98,16 @@ class _GeneralCard extends StatelessWidget {
                 ? null
                 : (on) => store.setLoginItem(on),
           ),
+          if (store.awake.supported)
+            SwitchRow(
+              switchKey: const Key('settings-awake'),
+              title: l10n.keepAwakeTitle,
+              subtitle: store.awake.error == null
+                  ? l10n.keepAwakeHint
+                  : l10n.keepAwakeRefused(store.awake.error!),
+              value: store.awake.enabled,
+              onChanged: (on) => store.setAwake(on),
+            ),
           if (login == LoginItem.requiresApproval)
             Align(
               alignment: AlignmentDirectional.centerStart,
@@ -228,11 +248,18 @@ class _PanesCard extends StatelessWidget {
   }
 }
 
-/// What this is: the app's version and the library's.
+/// What this is: the app's version and the library's, and whether a newer
+/// release is out.
 class _AboutCard extends StatefulWidget {
-  const _AboutCard({required this.store});
+  const _AboutCard({
+    required this.store,
+    required this.prefs,
+    required this.updates,
+  });
 
   final AppStore store;
+  final AppPrefs prefs;
+  final UpdateController updates;
 
   @override
   State<_AboutCard> createState() => _AboutCardState();
@@ -287,8 +314,70 @@ class _AboutCardState extends State<_AboutCard> {
             library.isEmpty ? l10n.aboutUnknownVersion : library,
             const Key('settings-library-version'),
           ),
+          // The app ships for macOS and Windows, which both update; shown
+          // on any system, so tests on any host see it.
+          _UpdateRow(updates: widget.updates, prefs: widget.prefs),
         ],
       ),
+    );
+  }
+}
+
+/// Look for a newer release, or install the one a check found, and whether
+/// to look on their own.
+class _UpdateRow extends StatelessWidget {
+  const _UpdateRow({required this.updates, required this.prefs});
+
+  final UpdateController updates;
+  final AppPrefs prefs;
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    return ListenableBuilder(
+      listenable: Listenable.merge([updates, prefs]),
+      builder: (context, _) {
+        final release = updates.published;
+        final offer = updates.newer && release != null;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const SizedBox(height: 10),
+            Align(
+              alignment: AlignmentDirectional.centerStart,
+              child: offer
+                  ? FilledButton.tonalIcon(
+                      key: const Key('settings-update'),
+                      onPressed: () => showUpdateDialog(context, updates),
+                      icon: const Icon(
+                        AppIcons.update,
+                        size: AppIconSize.inline,
+                      ),
+                      label: Text(l10n.updateTo('${release.version}')),
+                    )
+                  : OutlinedButton.icon(
+                      key: const Key('settings-check-updates'),
+                      onPressed: updates.busy
+                          ? null
+                          : () => showUpdateDialog(context, updates),
+                      icon: const Icon(
+                        AppIcons.update,
+                        size: AppIconSize.inline,
+                      ),
+                      label: Text(l10n.checkForUpdates),
+                    ),
+            ),
+            const SizedBox(height: 6),
+            SwitchRow(
+              switchKey: const Key('settings-auto-update'),
+              title: l10n.autoCheckUpdates,
+              subtitle: l10n.autoCheckUpdatesHint,
+              value: prefs.autoCheckUpdates,
+              onChanged: prefs.setAutoCheckUpdates,
+            ),
+          ],
+        );
+      },
     );
   }
 }

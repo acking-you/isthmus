@@ -14,6 +14,7 @@ enum StoreAction {
   requestPermission,
   openSettingsPane,
   loginItem,
+  awake,
   runningApps,
   linkPair,
   linkUnpair,
@@ -107,6 +108,9 @@ class AppStore extends ChangeNotifier {
   /// Launch at login.
   LoginItem loginItem = LoginItem.unavailable;
 
+  /// Keeping the computer awake while its screen sleeps.
+  AwakeStatus awake = AwakeStatus.unknown;
+
   /// Whether the first read finished, so a page can tell "nothing yet" from
   /// "nothing at all".
   bool loaded = false;
@@ -176,6 +180,7 @@ class AppStore extends ChangeNotifier {
         _loadSettings(),
         _loadDevices(),
         _loadLoginItem(),
+        _loadAwake(),
       ]);
       ok = ok && reads.every((read) => read);
       if (_disposed) return;
@@ -307,6 +312,19 @@ class AppStore extends ChangeNotifier {
     }
   }
 
+  Future<bool> _loadAwake() async {
+    try {
+      final next = await api.awakeStatus();
+      if (_disposed) return true;
+      awake = next;
+      _notify();
+      return true;
+    } catch (_) {
+      // Not offered, rather than a failed launch: the switch hides.
+      return true;
+    }
+  }
+
   // --- Writes.
 
   /// Change the settings with [edit]; answers whether Rust saved it.
@@ -428,6 +446,26 @@ class AppStore extends ChangeNotifier {
     } catch (error) {
       onFailure?.call(StoreAction.loginItem, _asCallException(error));
       await _loadLoginItem();
+    }
+  }
+
+  /// Turns keeping the computer awake on or off. The switch moves at once;
+  /// a refusal says why and shows what the library holds.
+  Future<void> setAwake(bool enabled) async {
+    awake = AwakeStatus(
+      enabled: enabled,
+      active: awake.active,
+      supported: awake.supported,
+    );
+    _notify();
+    try {
+      final next = await api.setAwake(enabled);
+      if (_disposed) return;
+      awake = next;
+      _notify();
+    } catch (error) {
+      onFailure?.call(StoreAction.awake, _asCallException(error));
+      await _loadAwake();
     }
   }
 

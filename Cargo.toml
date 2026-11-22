@@ -22,6 +22,7 @@ expect_used = "deny"
 isthmus-core = { path = "crates/isthmus-core", version = "0.1.0" }
 isthmus-input = { path = "crates/isthmus-input", version = "0.1.0" }
 isthmus-link = { path = "crates/isthmus-link", version = "0.1.0" }
+isthmus-awake = { path = "crates/isthmus-awake", version = "0.1.0" }
 
 clap = { version = "4.5", features = ["derive"] }
 libc = "0.2.190"
@@ -48,6 +49,17 @@ getrandom = "0.3.4"
 mdns-sd = { version = "0.22.0", default-features = false, features = ["logging"] }
 if-addrs = "0.15.0"
 socket2 = { version = "0.6.5", features = ["all"] }
+
+# The app's update check: the Ed25519 signature over each release's
+# manifest, checked in Rust as pb-mapper does (with ed25519-dalek, pure Rust
+# like the rest of the stack, rather than pb-mapper's ring). The op takes
+# its bytes as base64.
+ed25519-dalek = { version = "2.2.0", default-features = false, features = ["std", "fast"] }
+base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
+
+# isthmus-awake's Windows power request. Already in the tree (tokio and
+# socket2 use it); only the modules named.
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Power", "Win32_System_Threading"] }
 
 # The macOS layer (isthmus-input's platform/macos): event taps, HID event
 # system properties, the frontmost application, permissions and login items.

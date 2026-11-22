@@ -85,6 +85,15 @@ and every change it makes to macOS is put back when it stops.
   KVM, say) is used first and the shared network second, and a transfer
   that loses one carries on over the other
   ([file sharing](docs/file-sharing.md)).
+- **Awake with the screen off** — one switch, in Settings or the menu bar,
+  keeps the computer from sleeping on its own while the screen still turns
+  off on its schedule: downloads, builds, remote sessions and file sharing
+  keep running, and the display saves power. On a Mac and on a PC.
+- **Updates in one click** — Settings › About checks for a newer release,
+  and on its own about twice a day unless you turn that off. Update
+  downloads it, checks it against the release's signed manifest, and puts
+  it in place: Isthmus closes and opens again on the new version, keeping
+  its Accessibility permission ([updates](docs/updates.md)).
 
 ## How it works
 
@@ -128,7 +137,12 @@ Worth knowing:
 
 ## Get started
 
-**1. Build the app** on a Mac with Xcode, Rust and Flutter:
+**1. Get the app.** Download `Isthmus-macos-arm64.dmg` (Apple silicon) or
+`Isthmus-macos-x86_64.dmg` (Intel) from
+[Releases](https://github.com/acking-you/isthmus/releases), open it and drag
+Isthmus to Applications. It is signed with Developer ID and notarized, and
+updates itself from Settings › About. Or build it on a Mac with Xcode, Rust
+and Flutter:
 
 ```bash
 make build-ui-macos-release   # builds the Rust library, then Isthmus.app
@@ -168,11 +182,16 @@ hidutil property --set '{"UserKeyMapping":[]}'   # clear every key mapping by ha
 Unplugging and replugging a keyboard or mouse, or restarting the Mac, also
 clears everything Isthmus set.
 
-**On a PC**, the Windows build has the file sharing (with Rust, Flutter and
-Visual Studio's C++ tools, in PowerShell):
+**On a PC**, the Windows app has the file sharing and keeps the computer
+awake: run `Isthmus-windows-x86_64-setup.exe` from
+[Releases](https://github.com/acking-you/isthmus/releases), which installs it
+and keeps it up to date, or unzip the portable `Isthmus-windows-x86_64.zip`.
+To build it (with Rust, Flutter and Visual Studio's C++ tools, in
+PowerShell):
 
 ```bash
 make build-ui-windows-release   # builds isthmus_ffi.dll, then Isthmus.exe
+make release-ui-windows         # the installer and the zip in ui/dist (needs Inno Setup 6)
 ```
 
 Every setting and shortcut: [keyboard and mouse](docs/keyboard-and-mouse.md)

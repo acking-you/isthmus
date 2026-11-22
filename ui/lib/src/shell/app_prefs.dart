@@ -4,8 +4,8 @@ import 'package:flutter/foundation.dart';
 import 'package:isthmus_ui/src/common/locale_controller.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// The user's choices about the app itself: the language, and whether the
-/// window has been shown once. Remembered across launches; a failed read or
+/// The user's choices about the app itself: the language, whether the
+/// window has been shown once, and the update check. Remembered across launches; a failed read or
 /// write only costs the choice, never the launch.
 class AppPrefs extends ChangeNotifier {
   AppPrefs({this.persist = true});
@@ -15,6 +15,9 @@ class AppPrefs extends ChangeNotifier {
 
   static const _onboardedKey = 'onboarded';
   static const _relaunchKey = 'accessibilityRelaunchAtMs';
+  static const _autoUpdateKey = 'updateAutoCheck';
+  static const _lastUpdateCheckKey = 'updateLastCheckMs';
+  static const _announcedUpdateKey = 'updateAnnounced';
 
   /// Two automatic relaunches this close together mean the relaunch did not
   /// help: the second time the app asks the user instead of looping.
@@ -31,6 +34,17 @@ class AppPrefs extends ChangeNotifier {
   /// When the app last relaunched itself to apply a new Accessibility
   /// grant, or null.
   DateTime? lastAccessibilityRelaunch;
+
+  /// Whether the app looks for a newer release on its own, about twice a
+  /// day. Nothing is downloaded without the user.
+  bool autoCheckUpdates = true;
+
+  /// When it last did.
+  DateTime? lastUpdateCheck;
+
+  /// The newest version the user has been told about, so each is announced
+  /// once.
+  String? announcedUpdate;
 
   /// The app relaunched itself for Accessibility within [window]: the new
   /// instance shows its window so the user sees the grant took effect, and
@@ -63,6 +77,12 @@ class AppPrefs extends ChangeNotifier {
       lastAccessibilityRelaunch = relaunchMs == null
           ? null
           : DateTime.fromMillisecondsSinceEpoch(relaunchMs);
+      autoCheckUpdates = prefs.getBool(_autoUpdateKey) ?? true;
+      final lastCheck = prefs.getInt(_lastUpdateCheckKey);
+      lastUpdateCheck = lastCheck == null
+          ? null
+          : DateTime.fromMillisecondsSinceEpoch(lastCheck);
+      announcedUpdate = prefs.getString(_announcedUpdateKey);
     } catch (_) {}
     locale = await LocaleController.load();
     notifyListeners();
@@ -88,6 +108,35 @@ class AppPrefs extends ChangeNotifier {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool(_onboardedKey, true);
+    } catch (_) {}
+  }
+
+  Future<void> setAutoCheckUpdates(bool value) async {
+    if (value == autoCheckUpdates) return;
+    autoCheckUpdates = value;
+    notifyListeners();
+    if (!persist) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_autoUpdateKey, value);
+    } catch (_) {}
+  }
+
+  Future<void> markUpdateCheck(DateTime at) async {
+    lastUpdateCheck = at;
+    if (!persist) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(_lastUpdateCheckKey, at.millisecondsSinceEpoch);
+    } catch (_) {}
+  }
+
+  Future<void> markUpdateAnnounced(String version) async {
+    announcedUpdate = version;
+    if (!persist) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_announcedUpdateKey, version);
     } catch (_) {}
   }
 }

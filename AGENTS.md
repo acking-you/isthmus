@@ -14,21 +14,24 @@ Rules for changing this repository. `CLAUDE.md` is a symlink to this file.
 - One `isthmus` binary (`crates/isthmus-cli`) with the commands `devices`,
   `status`, `settings`, `preset`, `run`, `restore` and `inspect`, and one
   app (`ui/`, for macOS and Windows); both drive `isthmus-input`, and the
-  app also drives `isthmus-link` (discovery, pairing, file sharing).
+  app also drives `isthmus-link` (discovery, pairing, file sharing) and
+  `isthmus-awake` (keeping the computer awake while its screen sleeps).
 - Dependencies point one way: `isthmus-cli` → `isthmus-input`, and
-  `isthmus-ffi` (`ui/native/isthmus_ffi`) → `isthmus-input` and
-  `isthmus-link`, all → `isthmus-core`. A new feature (display alignment,
-  keyboard and mouse across devices) is a sibling crate on `isthmus-core`,
-  never a module inside another ([docs/roadmap.md](docs/roadmap.md)).
+  `isthmus-ffi` (`ui/native/isthmus_ffi`) → `isthmus-input`,
+  `isthmus-link` and `isthmus-awake`, all → `isthmus-core`. A new feature
+  (display alignment, keyboard and mouse across devices) is a sibling crate
+  on `isthmus-core`, never a module inside another
+  ([docs/roadmap.md](docs/roadmap.md)).
 - A feature crate names an operating system's API only under
   `src/platform/<os>`, chosen at compile time: macOS for `isthmus-input`
   (every other OS gets `Unsupported`), macOS and Windows for
-  `isthmus-link`. Everything above it (settings, device grouping, the
-  mapping tables, the engines, the journal's decisions, path ranking, the
-  wire protocol) is plain data or portable async code, tested on any
-  host.
-- The Windows app is file sharing only: the keyboard and mouse pages and
-  the tray's Windows-habits switch exist on a Mac alone (`hasInputPages`).
+  `isthmus-link` and `isthmus-awake`. Everything above it (settings, device
+  grouping, the mapping tables, the engines, the journal's decisions, path
+  ranking, the wire protocol) is plain data or portable async code, tested
+  on any host.
+- The Windows app is file sharing, keep-awake and updates: the keyboard
+  and mouse pages, the restore and System Settings cards, and the tray's
+  Windows-habits switch exist on a Mac alone (`hasInputPages`).
 - The event tap's decisions live in `isthmus-input/src/engine/` with no OS
   types: the platform turns a `CGEvent` into the engine's values and carries
   out its answer. A new shortcut is a rule there, with a test, and a row in
@@ -167,8 +170,9 @@ Run what your change touches and say what you could not run.
   stating the contract.
 - Never change the live system in a test: no HID property writes, no active
   event taps, no posted events, no `defaults write`, `tccutil` or login
-  items. The decisions are pure functions tested on plain values; what needs
-  the system is checked by hand, read-only where possible.
+  items, no power assertions or requests, no installers run. The decisions
+  are pure functions tested on plain values; what needs the system is
+  checked by hand, read-only where possible.
 - Link tests run services on loopback with discovery off and scratch data
   and receive folders; no test announces on the real network or writes to
   Downloads.
@@ -189,9 +193,19 @@ Run what your change touches and say what you could not run.
   version.
 - Pushing the tag runs `.github/workflows/release.yml`: a Developer
   ID-signed, notarized DMG per macOS architecture
-  (`scripts/release/macos_package.py`) and a portable Windows zip, with the
-  notes from that version's CHANGELOG section. Run it by hand with
-  `verify_only` to check signing without publishing. The signing secrets
-  and variables it names live on the repository; never in the tree.
+  (`scripts/release/macos_package.py`), the Windows installer (fastforge
+  and Inno Setup, `ui/windows/packaging`, its update contract checked by
+  installing it) and portable zip, and `release-manifest.json` signed with
+  the update key, all published at once with the notes from that version's
+  CHANGELOG section. Run it by hand with `verify_only` to check signing
+  without publishing. The signing secrets and variables it names live on
+  the repository; never in the tree.
+- The update key (`UPDATE_SIGNING_KEY`; its public half in
+  `scripts/release/update_signing_key.pub.pem` and `updatePublicKey` in
+  `ui/lib/src/updates/release.dart`) and the installer's AppId never
+  change: a new key strands every installed copy on its version, and a new
+  AppId installs beside the old installation. The asset names are the
+  updater's (`packageFor`) and `ui_release_manifest.py`'s; they change
+  together, and never for a published version ([docs/updates.md](docs/updates.md)).
 - `version` stays the first key of `[workspace.package]`.
 - Never commit secrets or signing identities.

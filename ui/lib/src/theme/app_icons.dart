@@ -93,6 +93,9 @@ abstract final class AppIcons {
   // Settings.
   static const IconData language = LucideIcons.globe400;
   static const IconData loginItem = LucideIcons.rocket400;
+  static const IconData awake = LucideIcons.coffee400;
+  static const IconData update = LucideIcons.circleArrowUp400;
+  static const IconData download = LucideIcons.download400;
   static const IconData comingNext = LucideIcons.radar400;
 
   // Disclosure.

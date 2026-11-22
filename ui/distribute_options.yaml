@@ -1,0 +1,16 @@
+# fastforge (`fastforge release --name production`, see the Makefile's
+# release-ui-windows-no-ffi): the Windows installer and the portable archive,
+# both from one `flutter build windows`. The release workflow renames them
+# Isthmus-windows-x86_64-setup.exe and Isthmus-windows-x86_64.zip.
+output: dist/
+releases:
+  - name: production
+    jobs:
+      - name: windows-exe
+        package:
+          platform: windows
+          target: exe
+      - name: windows-zip
+        package:
+          platform: windows
+          target: zip

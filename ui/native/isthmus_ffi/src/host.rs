@@ -20,11 +20,14 @@
 //! the keyboard and mouse: the link ops answer with that failure instead.
 //! A link that could not start because another Isthmus holds its lock is
 //! tried again on the next link op, so quitting the other copy is enough.
+//! Keeping the computer awake ([`KeepAwake`], through the [`Awake`] trait)
+//! starts and stops with them the same way.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
+use isthmus_awake::{AwakeStatus, Error as AwakeError, KeepAwake};
 use isthmus_input::context::FrontApp;
 use isthmus_input::status::{DeviceEntry, LoginItem, PermissionKind, SettingsPane};
 use isthmus_input::{
@@ -177,11 +180,37 @@ impl Link for LinkService {
     }
 }
 
+/// What the awake ops need: [`KeepAwake`]'s methods, as a trait so the
+/// tests never hold a real power request.
+pub(crate) trait Awake: Send + Sync {
+    fn status(&self) -> AwakeStatus;
+    fn set(&self, enabled: bool) -> Result<AwakeStatus, AwakeError>;
+    fn shutdown(&self);
+}
+
+impl Awake for KeepAwake {
+    fn status(&self) -> AwakeStatus {
+        KeepAwake::status(self)
+    }
+
+    fn set(&self, enabled: bool) -> Result<AwakeStatus, AwakeError> {
+        KeepAwake::set(self, enabled)
+    }
+
+    fn shutdown(&self) {
+        KeepAwake::shutdown(self)
+    }
+}
+
 /// Starts the service; the host calls it at most once per process.
 pub(crate) type Starter = Box<dyn Fn() -> Result<Arc<dyn Service>, ServiceError> + Send + Sync>;
 
 /// Starts file sharing, answering its failure as the link ops will.
 pub(crate) type LinkStarter = Box<dyn Fn() -> Result<Arc<dyn Link>, CtlError> + Send + Sync>;
+
+/// Reads the keep-awake choice and holds the request it asks for,
+/// answering its failure as the awake ops will.
+pub(crate) type AwakeStarter = Box<dyn Fn() -> Result<Arc<dyn Awake>, CtlError> + Send + Sync>;
 
 /// Where the service is in its life.
 enum Lifecycle {
@@ -198,6 +227,8 @@ struct Running {
     service: Arc<dyn Service>,
     /// File sharing, or why it did not start.
     link: Result<Arc<dyn Link>, CtlError>,
+    /// Keeping the computer awake, or why its choice could not be read.
+    awake: Result<Arc<dyn Awake>, CtlError>,
 }
 
 /// What a shutdown found, so the op can say what happened.
@@ -216,14 +247,20 @@ pub struct Host {
     lifecycle: Mutex<Lifecycle>,
     starter: Starter,
     link_starter: LinkStarter,
+    awake_starter: AwakeStarter,
 }
 
 impl Host {
-    pub(crate) fn new(starter: Starter, link_starter: LinkStarter) -> Self {
+    pub(crate) fn new(
+        starter: Starter,
+        link_starter: LinkStarter,
+        awake_starter: AwakeStarter,
+    ) -> Self {
         Self {
             lifecycle: Mutex::new(Lifecycle::Idle),
             starter,
             link_starter,
+            awake_starter,
         }
     }
 
@@ -241,9 +278,14 @@ impl Host {
                 if let Err(error) = &link {
                     tracing::warn!(code = ?error.code(), %error, "file sharing did not start");
                 }
+                let awake = (self.awake_starter)();
+                if let Err(error) = &awake {
+                    tracing::warn!(code = ?error.code(), %error, "keep-awake did not start");
+                }
                 *lifecycle = Lifecycle::Running(Running {
                     service: service.clone(),
                     link,
+                    awake,
                 });
                 Ok(service)
             }
@@ -274,6 +316,16 @@ impl Host {
         running.link.clone()
     }
 
+    /// Keeping the computer awake, for the awake ops: why its choice could
+    /// not be read when it could not.
+    pub(crate) fn awake(&self) -> Result<Arc<dyn Awake>, CtlError> {
+        match &*self.lifecycle.lock() {
+            Lifecycle::Running(running) => running.awake.clone(),
+            Lifecycle::Idle => Err(CtlError::not_running("Isthmus has not started yet")),
+            Lifecycle::Stopped => Err(shut_down()),
+        }
+    }
+
     /// Puts everything back and stops the service, once; later calls wait
     /// for that one and report it.
     pub(crate) fn shutdown(&self) -> Shutdown {
@@ -283,6 +335,9 @@ impl Host {
                 running.service.shutdown();
                 if let Ok(link) = running.link {
                     link.shutdown();
+                }
+                if let Ok(awake) = running.awake {
+                    awake.shutdown();
                 }
                 Shutdown::Stopped
             }
@@ -298,8 +353,13 @@ fn shut_down() -> CtlError {
 }
 
 /// The process's host, with the real service behind it.
-static HOST: LazyLock<Host> =
-    LazyLock::new(|| Host::new(Box::new(start_input_service), Box::new(start_link_service)));
+static HOST: LazyLock<Host> = LazyLock::new(|| {
+    Host::new(
+        Box::new(start_input_service),
+        Box::new(start_link_service),
+        Box::new(start_keep_awake),
+    )
+});
 
 /// The process's host.
 pub(crate) fn global() -> &'static Host {
@@ -328,6 +388,15 @@ fn start_link_service() -> Result<Arc<dyn Link>, CtlError> {
     let service = LinkService::start(LinkOptions::new(data_dir, Some(on_change)))
         .map_err(CtlError::from_link)?;
     Ok(Arc::new(service))
+}
+
+/// Reads the keep-awake choice in the user's data directory and holds the
+/// request when it is on.
+fn start_keep_awake() -> Result<Arc<dyn Awake>, CtlError> {
+    let data_dir = isthmus_core::paths::data_dir()
+        .map_err(|error| CtlError::new(ErrorCode::Io, error.to_string()))?;
+    let keep = KeepAwake::start(&data_dir).map_err(CtlError::from_awake)?;
+    Ok(Arc::new(keep))
 }
 
 /// Puts every system change back and stops the service, if it started. For

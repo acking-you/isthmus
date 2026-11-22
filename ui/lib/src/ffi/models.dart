@@ -1020,6 +1020,44 @@ enum LoginItem {
   };
 }
 
+/// Keeping the computer awake while its screen sleeps (`awake_status`,
+/// `awake_set`).
+class AwakeStatus {
+  const AwakeStatus({
+    required this.enabled,
+    required this.active,
+    required this.supported,
+    this.error,
+  });
+
+  /// Before the first read, and wherever the library cannot say: off, and
+  /// not offered.
+  static const unknown = AwakeStatus(
+    enabled: false,
+    active: false,
+    supported: false,
+  );
+
+  /// What the user chose.
+  final bool enabled;
+
+  /// Whether the system is holding the request now.
+  final bool active;
+
+  /// Whether this system can do it at all.
+  final bool supported;
+
+  /// The system's reason for refusing, while chosen but not held.
+  final String? error;
+
+  static AwakeStatus fromJson(Map<String, Object?> json) => AwakeStatus(
+    enabled: json['enabled'] == true,
+    active: json['active'] == true,
+    supported: json['supported'] == true,
+    error: json['error'] is String ? json['error'] as String : null,
+  );
+}
+
 /// What a change hint says went stale (`Change`). [unknown] is a kind this
 /// build cannot name, read as "something changed".
 enum ChangeKind {

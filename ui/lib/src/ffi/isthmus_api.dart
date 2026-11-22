@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:isthmus_ui/src/ffi/isthmus_service.dart';
 import 'package:isthmus_ui/src/ffi/models.dart';
 
@@ -132,6 +134,20 @@ abstract interface class IsthmusApiClient {
   /// `link_reveal`: shows a received transfer, or without [id] the receive
   /// folder, in the file manager.
   Future<void> linkReveal([String? id]);
+
+  /// `awake_status`: keeping the computer awake, chosen and in effect.
+  Future<AwakeStatus> awakeStatus();
+
+  /// `awake_set`: turns keeping the computer awake on or off.
+  Future<AwakeStatus> setAwake(bool enabled);
+
+  /// `update_verify`: whether [signature] is [publicKey]'s Ed25519
+  /// signature over exactly [message]. Needs no running service.
+  Future<bool> verifySignature({
+    required List<int> message,
+    required List<int> signature,
+    required List<int> publicKey,
+  });
 }
 
 /// [IsthmusApiClient] over the FFI.
@@ -283,4 +299,28 @@ class IsthmusApi implements IsthmusApiClient {
 
   @override
   Future<void> linkReveal([String? id]) => _call('link_reveal', {'id': ?id});
+
+  @override
+  Future<AwakeStatus> awakeStatus() async =>
+      AwakeStatus.fromJson(_object(await _call('awake_status')));
+
+  @override
+  Future<AwakeStatus> setAwake(bool enabled) async => AwakeStatus.fromJson(
+    _object(await _call('awake_set', {'enabled': enabled})),
+  );
+
+  @override
+  Future<bool> verifySignature({
+    required List<int> message,
+    required List<int> signature,
+    required List<int> publicKey,
+  }) async =>
+      _object(
+        await _call('update_verify', {
+          'message': base64Encode(message),
+          'signature': base64Encode(signature),
+          'publicKey': base64Encode(publicKey),
+        }),
+      )['valid'] ==
+      true;
 }

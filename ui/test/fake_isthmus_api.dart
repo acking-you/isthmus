@@ -363,6 +363,42 @@ class FakeIsthmusApi implements IsthmusApiClient {
   @override
   Future<void> linkReveal([String? id]) async =>
       _check('link_reveal ${id ?? '-'}');
+
+  /// Keep-awake as the library reports it.
+  AwakeStatus awake = const AwakeStatus(
+    enabled: false,
+    active: false,
+    supported: true,
+  );
+
+  @override
+  Future<AwakeStatus> awakeStatus() async {
+    _check('awake_status');
+    return awake;
+  }
+
+  @override
+  Future<AwakeStatus> setAwake(bool enabled) async {
+    _check('awake_set $enabled');
+    return awake = AwakeStatus(
+      enabled: enabled,
+      active: enabled,
+      supported: true,
+    );
+  }
+
+  /// Signatures `update_verify` accepts: the message's text.
+  final Set<String> validSignatures = {};
+
+  @override
+  Future<bool> verifySignature({
+    required List<int> message,
+    required List<int> signature,
+    required List<int> publicKey,
+  }) async {
+    _check('update_verify');
+    return validSignatures.contains(String.fromCharCodes(signature));
+  }
 }
 
 /// A Mac with something on every card: a missing permission, Secure Input,

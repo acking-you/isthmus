@@ -3,14 +3,19 @@ name: Release
 # A `vX.Y.Z` tag builds and publishes the release, after pb-mapper's
 # release-ui workflow: a Developer ID-signed, notarized and stapled DMG per
 # macOS architecture (one native runner each, so each app carries a
-# single-arch FFI library) and a portable Windows zip, with the notes taken
-# from that version's CHANGELOG section. Run by hand with `verify_only`, it
-# builds, signs and notarizes without publishing.
+# single-arch FFI library), a Windows installer (Inno Setup through
+# fastforge, its update contract checked by installing it) and a portable
+# Windows zip, and the signed manifest the app updates itself from, with the
+# notes taken from that version's CHANGELOG section. The build jobs only make
+# artifacts; `publish` signs the manifest and creates the release with every
+# file at once, so no release is ever seen without its manifest. Run by hand
+# with `verify_only`, it builds, signs and notarizes without publishing.
 #
 # Signing needs the repository secrets MACOS_CERTIFICATE_P12_BASE64,
-# MACOS_CERTIFICATE_PASSWORD and APPLE_NOTARY_PRIVATE_KEY, and the variables
-# MACOS_SIGNING_IDENTITY, APPLE_TEAM_ID, APPLE_NOTARY_KEY_ID and
-# APPLE_NOTARY_ISSUER_ID.
+# MACOS_CERTIFICATE_PASSWORD, APPLE_NOTARY_PRIVATE_KEY and UPDATE_SIGNING_KEY
+# (the Ed25519 key whose public half is scripts/release/
+# update_signing_key.pub.pem), and the variables MACOS_SIGNING_IDENTITY,
+# APPLE_TEAM_ID, APPLE_NOTARY_KEY_ID and APPLE_NOTARY_ISSUER_ID.
 
 on:
   push:
@@ -64,7 +69,9 @@ jobs:
             echo "## Downloads"
             echo
             echo "- **macOS 13 or later**: \`Isthmus-macos-arm64.dmg\` (Apple silicon) or \`Isthmus-macos-x86_64.dmg\` (Intel), signed with Developer ID and notarized. Open the DMG, drag Isthmus to Applications, and allow Accessibility when it asks."
-            echo "- **Windows 10 or later**: \`Isthmus-windows-x86_64.zip\`, portable. Unzip anywhere and run \`Isthmus.exe\`; allow it through the firewall on private **and** public networks (a direct cable counts as public). The Windows app shares files; the keyboard and mouse habits are a Mac's."
+            echo "- **Windows 10 or later**: \`Isthmus-windows-x86_64-setup.exe\`, the installer, which keeps Isthmus up to date from Settings › About; or \`Isthmus-windows-x86_64.zip\`, portable: unzip anywhere and run \`Isthmus.exe\`. Allow it through the firewall on private **and** public networks (a direct cable counts as public). The Windows app shares files and keeps the computer awake; the keyboard and mouse habits are a Mac's."
+            echo
+            echo "Isthmus 0.1.0 and later check this page for updates; each release's \`release-manifest.json\` lists every file's SHA-256 and is signed with the release key."
             echo
             echo "## Changes"
             echo
@@ -174,23 +181,12 @@ jobs:
           name: macos-${{ matrix.arch }}-dmg
           path: ui/dist/Isthmus-macos-${{ matrix.arch }}.dmg
           if-no-files-found: error
-      - name: Publish
-        if: env.PUBLISH == 'true'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: Isthmus ${{ github.ref_name }}
-          body_path: release_notes.md
-          files: ui/dist/Isthmus-macos-${{ matrix.arch }}.dmg
 
   windows:
     needs: notes
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: release-notes
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -200,12 +196,31 @@ jobs:
         run: rustup toolchain install $env:RUST_TOOLCHAIN --profile minimal
       - name: Build and stage the FFI library
         run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build/isthmus-ffi-windows.ps1
-      - name: Build the app
+      # The Makefile's release-ui-windows-no-ffi, without make: fastforge
+      # builds the app once and packages the installer (Inno Setup 6, on the
+      # runner image) and the portable zip from it.
+      - name: Build the installer and the portable zip
         working-directory: ui
         run: |
+          flutter clean
+          dart pub global activate fastforge
           flutter pub get
-          flutter build windows --release
-      - name: Package the portable zip
+          dart pub global run fastforge:main release --name production
+          if ($LASTEXITCODE -ne 0) { throw "fastforge failed" }
+      # fastforge names its output after the Dart package and the pubspec
+      # version (isthmus_ui-0.1.0+1-windows-setup.exe); the in-app updater
+      # and the macOS DMGs use Isthmus-<os>-<arch>.
+      - name: Name the Windows packages like the others
+        run: |
+          $setup = @(Get-ChildItem ui/dist -Recurse -Filter "*-windows-setup.exe")
+          $zip = @(Get-ChildItem ui/dist -Recurse -Filter "*-windows.zip")
+          if ($setup.Count -ne 1 -or $zip.Count -ne 1) {
+            throw "Expected one installer and one zip, found: $($setup.Name) $($zip.Name)"
+          }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Move-Item $setup[0].FullName dist/Isthmus-windows-x86_64-setup.exe
+          Move-Item $zip[0].FullName dist/Isthmus-windows-x86_64.zip
+      - name: The bundle carries the library just built
         run: |
           $release = "ui/build/windows/x64/runner/Release"
           foreach ($name in @("Isthmus.exe", "isthmus_ffi.dll")) {
@@ -214,13 +229,117 @@ jobs:
           $staged = (Get-FileHash "ui/native/windows/x64/isthmus_ffi.dll").Hash
           $bundled = (Get-FileHash (Join-Path $release "isthmus_ffi.dll")).Hash
           if ($staged -ne $bundled) { throw "The bundled isthmus_ffi.dll is not the one just built" }
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item -Recurse $release dist/Isthmus
-          Compress-Archive -Path dist/Isthmus -DestinationPath dist/Isthmus-windows-x86_64.zip
+      # The installer as the in-app update runs it (ui/windows/packaging/exe/
+      # inno_setup.iss), into a folder of its own: it must wait for the app
+      # it updates to close, install the bundle, then open the installed app
+      # again. A broken installer is never published.
+      - name: The installer updates the app as the app asks it to
+        run: |
+          $setup = (Resolve-Path dist/Isthmus-windows-x86_64-setup.exe).Path
+          $dir = Join-Path $env:RUNNER_TEMP "Isthmus install"
+          $log = Join-Path $env:RUNNER_TEMP "Isthmus update\setup.log"
+          New-Item -ItemType Directory -Force (Split-Path $log) | Out-Null
+          # The app being updated, which Setup is named and must wait for.
+          $app = Start-Process powershell.exe -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 5' -WindowStyle Hidden -PassThru
+          $run = Start-Process -FilePath $setup -PassThru -ArgumentList @(
+            '/SILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-',
+            "/DIR=`"$dir`"", "/LOG=`"$log`"", "/UPDATEPID=$($app.Id)")
+          $null = $run.Handle  # keeps the exit code readable once it exits
+          if (!$run.WaitForExit(300000)) { throw "Setup did not finish within 5 minutes" }
+          $lines = @(Get-Content $log)
+          $lines
+          if ($run.ExitCode -ne 0) { throw "Setup exited with $($run.ExitCode)" }
+          function At($text) { ($lines | Select-String -SimpleMatch $text | Select-Object -First 1).LineNumber }
+          $order = @(
+            (At 'Waiting for Isthmus to close'),
+            (At 'Isthmus has closed'),
+            (At 'Starting the installation process.'),
+            (At "Opened $dir\Isthmus.exe again"))
+          for ($i = 0; $i -lt $order.Count; $i++) {
+            if (!$order[$i] -or ($i -gt 0 -and $order[$i] -le $order[$i - 1])) {
+              throw "Setup did not wait for the app, install, then open it again (log lines: $order)"
+            }
+          }
+          $bundle = "ui/build/windows/x64/runner/Release"
+          foreach ($name in @("Isthmus.exe", "isthmus_ffi.dll", "flutter_windows.dll", "data/app.so")) {
+            $installed = Join-Path $dir $name
+            if (!(Test-Path $installed)) { throw "Not installed: $name" }
+            if ((Get-FileHash -Algorithm SHA256 (Join-Path $bundle $name)).Hash -ne (Get-FileHash -Algorithm SHA256 $installed).Hash) {
+              throw "Installed $name differs from the bundle"
+            }
+          }
+          # How the app knows it was installed, and so updates through Setup.
+          if (!(Test-Path (Join-Path $dir "unins000.exe"))) { throw "No uninstaller beside the installed app" }
+          $shell = New-Object -ComObject WScript.Shell
+          $links = @(@(
+            "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Isthmus.lnk",
+            "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Isthmus.lnk",
+            "$env:PUBLIC\Desktop\Isthmus.lnk",
+            "$env:USERPROFILE\Desktop\Isthmus.lnk") | Where-Object { Test-Path -LiteralPath $_ })
+          if ($links.Count -eq 0) { throw "Setup created no Isthmus shortcut" }
+          foreach ($link in $links) {
+            $target = $shell.CreateShortcut($link).TargetPath
+            if ($target -ne (Join-Path $dir "Isthmus.exe")) { throw "$link opens $target" }
+          }
+          Start-Sleep -Seconds 3
+          Get-Process Isthmus -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$dir\*" } | Stop-Process -Force
       - uses: actions/upload-artifact@v4
         with:
-          name: windows-x86_64-zip
-          path: dist/Isthmus-windows-x86_64.zip
+          name: windows-x86_64
+          path: |
+            dist/Isthmus-windows-x86_64-setup.exe
+            dist/Isthmus-windows-x86_64.zip
+          if-no-files-found: error
+
+  # Every package in hand: the manifest that lists them is built and signed
+  # with the update key, checked against the public key the app carries, and
+  # the release is created once with all of it.
+  publish:
+    needs: [notes, macos, windows]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: macos-*-dmg
+          path: release
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-x86_64
+          path: release
+      - name: Write the release manifest
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag="v$(awk -F'"' '/^\[workspace.package\]/{p=1} p && /^version/{print $2; exit}' Cargo.toml)"
+          fi
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          ls -l release
+          python3 scripts/release/ui_release_manifest.py build release "$tag" "$GITHUB_SHA"
+          cat release/release-manifest.json
+      - name: Sign the release manifest
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$UPDATE_SIGNING_KEY" || { echo "::error::UPDATE_SIGNING_KEY is not set"; exit 1; }
+          KEY=$(mktemp)
+          trap 'rm -f "$KEY"' EXIT
+          printf '%s\n' "$UPDATE_SIGNING_KEY" > "$KEY"
+          python3 scripts/release/ui_release_manifest.py sign release/release-manifest.json --key "$KEY"
+          python3 scripts/release/ui_release_manifest.py verify release/release-manifest.json --public-key scripts/release/update_signing_key.pub.pem
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-manifest
+          path: release/release-manifest.json*
           if-no-files-found: error
       - name: Publish
         if: env.PUBLISH == 'true'
@@ -229,4 +348,18 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: Isthmus ${{ github.ref_name }}
           body_path: release_notes.md
-          files: dist/Isthmus-windows-x86_64.zip
+          fail_on_unmatched_files: true
+          files: |
+            release/Isthmus-macos-arm64.dmg
+            release/Isthmus-macos-x86_64.dmg
+            release/Isthmus-windows-x86_64-setup.exe
+            release/Isthmus-windows-x86_64.zip
+            release/release-manifest.json
+            release/release-manifest.json.sig
+      - name: The published files are the ones the manifest lists
+        if: env.PUBLISH == 'true'
+        run: |
+          python3 scripts/release/release_assets.py verify --repo "$GITHUB_REPOSITORY" --tag "$TAG" \
+            release/Isthmus-macos-arm64.dmg release/Isthmus-macos-x86_64.dmg \
+            release/Isthmus-windows-x86_64-setup.exe release/Isthmus-windows-x86_64.zip \
+            release/release-manifest.json release/release-manifest.json.sig

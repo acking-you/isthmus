@@ -15,6 +15,9 @@ typedef TrayView = ({
   // The "Windows habits" checkbox; empty leaves it out (a PC has none).
   String toggleLabel,
   bool enabled,
+  // The "Keep awake" checkbox; empty leaves it out (a system without it).
+  String awakeLabel,
+  bool awake,
   String openLabel,
   String quitLabel,
   // Keyboards with a Mac/Windows switch, each a checkbox that is on in
@@ -25,7 +28,7 @@ typedef TrayView = ({
 /// One keyboard's mode checkbox in the menu.
 typedef TrayKeyboardMode = ({String id, String label, bool windows});
 
-/// The menu bar item: a template icon and a four-line menu.
+/// The menu bar item: a template icon and a short menu.
 ///
 /// A template image is black plus alpha, and macOS tints it to match the menu
 /// bar: light in dark mode, dark in light mode, inverted while the item is
@@ -53,6 +56,7 @@ class TrayService with TrayListener {
   // being replaced still resolves to the same action.
   final _statusItem = MenuItem(key: 'status', disabled: true);
   final _toggleItem = MenuItem.checkbox(key: 'toggle', checked: false);
+  final _awakeItem = MenuItem.checkbox(key: 'awake', checked: false);
   final _openItem = MenuItem(key: 'open');
   final _separator = MenuItem.separator();
   final _quitItem = MenuItem(key: 'quit');
@@ -60,6 +64,7 @@ class TrayService with TrayListener {
 
   VoidCallback? _onOpen;
   ValueChanged<bool>? _onToggle;
+  ValueChanged<bool>? _onAwake;
   void Function(String id, bool windows)? _onKeyboardMode;
   final _keyboardSeparator = MenuItem.separator();
   final Map<String, MenuItem> _keyboardItems = {};
@@ -79,10 +84,12 @@ class TrayService with TrayListener {
     required VoidCallback onOpen,
     required ValueChanged<bool> onToggle,
     required VoidCallback onQuit,
+    ValueChanged<bool>? onAwake,
     void Function(String id, bool windows)? onKeyboardMode,
   }) async {
     _onOpen = onOpen;
     _onToggle = onToggle;
+    _onAwake = onAwake;
     _onKeyboardMode = onKeyboardMode;
     _onQuit = onQuit;
     if (_initialized) return update(view);
@@ -114,6 +121,9 @@ class TrayService with TrayListener {
     _toggleItem
       ..label = view.toggleLabel
       ..checked = view.enabled;
+    _awakeItem
+      ..label = view.awakeLabel
+      ..checked = view.awake;
     _openItem.label = view.openLabel;
     _quitItem.label = view.quitLabel;
     final keyboards = [
@@ -128,6 +138,7 @@ class TrayService with TrayListener {
     _menu.items = [
       _statusItem,
       if (view.toggleLabel.isNotEmpty) _toggleItem,
+      if (view.awakeLabel.isNotEmpty) _awakeItem,
       if (keyboards.isNotEmpty) ...[_keyboardSeparator, ...keyboards],
       _separator,
       _openItem,
@@ -189,6 +200,8 @@ class TrayService with TrayListener {
       a.status == b.status &&
       a.toggleLabel == b.toggleLabel &&
       a.enabled == b.enabled &&
+      a.awakeLabel == b.awakeLabel &&
+      a.awake == b.awake &&
       a.openLabel == b.openLabel &&
       a.quitLabel == b.quitLabel &&
       listEquals(a.keyboards, b.keyboards);
@@ -205,6 +218,8 @@ class TrayService with TrayListener {
     switch (menuItem.key) {
       case 'toggle':
         _onToggle?.call(!(_rendered?.enabled ?? false));
+      case 'awake':
+        _onAwake?.call(!(_rendered?.awake ?? false));
       case 'open':
         _onOpen?.call();
       case 'quit':

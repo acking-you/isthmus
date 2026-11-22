@@ -45,6 +45,8 @@
 - **分开调或一起切**：键盘和鼠标各有自己的开关，每个设备有自己的设置，Windows 和 Mac 两个预设一键作用于两者或其中之一（[设置](docs/keyboard-and-mouse.zh-CN.md#设置与一键切换)）。
 - **一切都会恢复**：Isthmus 对 macOS 的每一处改动都先记下再执行，并在退出、暂停、切换到其他用户时恢复，崩溃后则在下次启动时恢复。KVM 切换等同于重新插拔，Isthmus 会重新应用设置（[恢复](docs/keyboard-and-mouse.zh-CN.md#系统改动与恢复)）。
 - **电脑之间互传文件**：另一台 Mac 或 PC 上的 Isthmus 会自动出现；用 6 位配对码配对一次，之后两台会自己连上。把文件拖到窗口里，在设备旁点「发送」。优先走两台之间的直连线（比如插在 KVM 上的 USB 网卡），其次走共同的网络，传输中一条断了会在另一条上接着传（[文件互传](docs/file-sharing.zh-CN.md)）。
+- **不休眠，但屏幕照样熄灭**：设置或菜单栏里一个开关，让电脑不会自己进入睡眠，屏幕仍按系统设置自动熄灭：下载、编译、远程会话和文件互传继续运行，显示器照样省电。Mac 和 PC 都支持。
+- **一键更新**：「设置 › 关于」可以检查新版本，默认也会每天自动检查两次左右（可关闭）。点「更新」会下载新版本、用发布附带的签名清单校验，再替换到位：Isthmus 关闭后以新版本重新打开，辅助功能授权保持不变（[更新](docs/updates.md)，英文）。
 
 ## 工作原理
 
@@ -63,7 +65,7 @@
 
 ## 快速开始
 
-**1. 在装有 Xcode、Rust 和 Flutter 的 Mac 上构建应用：**
+**1. 获取应用。** 从 [Releases](https://github.com/acking-you/isthmus/releases) 下载 `Isthmus-macos-arm64.dmg`（Apple 芯片）或 `Isthmus-macos-x86_64.dmg`（Intel），打开后把 Isthmus 拖进「应用程序」。安装包已用 Developer ID 签名并经过公证，之后可在「设置 › 关于」里自动更新。也可以在装有 Xcode、Rust 和 Flutter 的 Mac 上自己构建：
 
 ```bash
 make build-ui-macos-release   # 先构建 Rust 库，再构建 Isthmus.app
@@ -97,10 +99,11 @@ hidutil property --set '{"UserKeyMapping":[]}'   # 手动清除所有键位映�
 
 拔下再插上键盘或鼠标，或者重启 Mac，同样会清除 Isthmus 设置的一切。
 
-**在 PC 上**，Windows 版提供文件互传（需要 Rust、Flutter 和 Visual Studio 的 C++ 工具，在 PowerShell 里）：
+**在 PC 上**，Windows 版提供文件互传和防休眠：从 [Releases](https://github.com/acking-you/isthmus/releases) 运行 `Isthmus-windows-x86_64-setup.exe` 一键安装（之后可在应用内自动更新），或解压免安装的 `Isthmus-windows-x86_64.zip`。自己构建（需要 Rust、Flutter 和 Visual Studio 的 C++ 工具，在 PowerShell 里）：
 
 ```bash
 make build-ui-windows-release   # 先构建 isthmus_ffi.dll，再构建 Isthmus.exe
+make release-ui-windows         # 在 ui/dist 生成安装包和 zip（需要 Inno Setup 6）
 ```
 
 每项设置与快捷键见[键盘与鼠标](docs/keyboard-and-mouse.zh-CN.md)；配对与传文件见[文件互传](docs/file-sharing.zh-CN.md)；构建与运行应用见 [ui/README.md](ui/README.md)（英文）；改动记录见[更新日志](CHANGELOG.md)。

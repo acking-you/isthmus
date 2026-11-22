@@ -24,6 +24,8 @@ import 'package:isthmus_ui/src/shell/app_shell.dart';
 import 'package:isthmus_ui/src/state/app_store.dart';
 import 'package:isthmus_ui/src/theme/app_theme.dart';
 import 'package:isthmus_ui/src/theme/motion.dart';
+import 'package:isthmus_ui/src/updates/update_controller.dart';
+import 'package:isthmus_ui/src/updates/update_schedule.dart';
 import 'package:toastification/toastification.dart' show ToastificationWrapper;
 import 'package:window_manager/window_manager.dart';
 
@@ -39,6 +41,7 @@ class IsthmusApp extends StatefulWidget {
     this.initialPage,
     this.pollInterval = const Duration(seconds: 2),
     this.windowReady,
+    this.updates,
   });
 
   final IsthmusApiClient api;
@@ -60,6 +63,9 @@ class IsthmusApp extends StatefulWidget {
   /// the menu bar life; without it, the "window" is always visible.
   final Future<void>? windowReady;
 
+  /// Defaults to the update flow against GitHub; tests pass their own.
+  final UpdateController? updates;
+
   @override
   State<IsthmusApp> createState() => _IsthmusAppState();
 }
@@ -73,6 +79,9 @@ class _IsthmusAppState extends State<IsthmusApp> with WindowListener {
     onFailure: _onFailure,
     onPermissionRequested: _desktop ? _showPermissionCard : null,
   );
+  late final UpdateController _updates =
+      widget.updates ?? UpdateController(quit: _quit, api: widget.api);
+  UpdateSchedule? _updateSchedule;
   late AppPage _page = widget.initialPage ?? AppPage.home;
   AppLifecycleListener? _lifecycle;
   Future<void>? _quitting;
@@ -110,6 +119,42 @@ class _IsthmusAppState extends State<IsthmusApp> with WindowListener {
         // Just relaunched to apply a grant: show that it worked.
         _prefs.relaunchedWithin(const Duration(minutes: 1))) {
       await _showWindow();
+    }
+    if (updatesSupported && mounted) {
+      unawaited(_reportUpdate());
+      _updateSchedule = UpdateSchedule(
+        updates: _updates,
+        prefs: _prefs,
+        announce: (version) => showToast(
+          null,
+          lookupAppLocalizations(_prefs.activeLocale)
+              .updateAnnounce('$version'),
+          kind: ToastKind.info,
+        ),
+      )..start();
+    }
+  }
+
+  /// Say what became of the update handed off before the last quit. The
+  /// update reopens the app from the background, where it would otherwise
+  /// wait unseen in the menu bar or the tray, so the window comes forward:
+  /// otherwise the app seems to have vanished, and the update to have
+  /// failed.
+  Future<void> _reportUpdate() async {
+    final outcome = await _updates.takeOutcome();
+    if (outcome == null || !mounted) return;
+    await _showWindow();
+    final l10n = lookupAppLocalizations(_prefs.activeLocale);
+    final version = '${outcome.to}';
+    if (outcome.installed) {
+      showToast(null, l10n.updateDone(version), kind: ToastKind.success);
+    } else {
+      showToast(
+        null,
+        l10n.updateNotDone(version),
+        kind: ToastKind.error,
+        description: l10n.updateNotDoneHint,
+      );
     }
   }
 
@@ -208,6 +253,7 @@ class _IsthmusAppState extends State<IsthmusApp> with WindowListener {
       StoreAction.requestPermission => l10n.failPermission,
       StoreAction.openSettingsPane => l10n.failOpenPane,
       StoreAction.loginItem => l10n.failLoginItem,
+      StoreAction.awake => l10n.failAwake,
       StoreAction.runningApps => l10n.failRunningApps,
       StoreAction.linkPair => l10n.failLinkPair,
       StoreAction.linkUnpair => l10n.failLinkUnpair,
@@ -265,6 +311,7 @@ class _IsthmusAppState extends State<IsthmusApp> with WindowListener {
         view: _trayView(),
         onOpen: () => unawaited(_showWindow()),
         onToggle: (on) => unawaited(_store.setEnabled(on)),
+        onAwake: (on) => unawaited(_store.setAwake(on)),
         onQuit: () => unawaited(_quit()),
         onKeyboardMode: (id, windows) {
           final device = _store.devices.where((d) => d.id == id).firstOrNull;
@@ -290,11 +337,14 @@ class _IsthmusAppState extends State<IsthmusApp> with WindowListener {
   /// A PC has no Windows habits to switch, so its menu is open and quit.
   TrayView _trayView() {
     final l10n = lookupAppLocalizations(_prefs.activeLocale);
+    final awakeLabel = _store.awake.supported ? l10n.trayKeepAwake : '';
     if (!hasInputPages) {
       return (
         status: l10n.appTitle,
         toggleLabel: '',
         enabled: false,
+        awakeLabel: awakeLabel,
+        awake: _store.awake.enabled,
         openLabel: l10n.trayOpen,
         quitLabel: l10n.trayQuit,
         keyboards: const [],
@@ -312,6 +362,8 @@ class _IsthmusAppState extends State<IsthmusApp> with WindowListener {
       status: status,
       toggleLabel: l10n.trayToggle,
       enabled: enabled,
+      awakeLabel: awakeLabel,
+      awake: _store.awake.enabled,
       openLabel: l10n.trayOpen,
       quitLabel: l10n.trayQuit,
       keyboards: [
@@ -362,6 +414,7 @@ class _IsthmusAppState extends State<IsthmusApp> with WindowListener {
   /// Let go of the tray and the library's callback. Never throws: nothing
   /// may stand between a quit and AppKit's terminate.
   void _prepareToQuit() {
+    _updateSchedule?.dispose();
     TrayService.instance.dispose();
     try {
       IsthmusService().dispose();
@@ -399,6 +452,8 @@ class _IsthmusAppState extends State<IsthmusApp> with WindowListener {
       TrayService.instance.dispose();
     }
     _lifecycle?.dispose();
+    _updateSchedule?.dispose();
+    if (widget.updates == null) _updates.dispose();
     _store.dispose();
     super.dispose();
   }
@@ -432,6 +487,7 @@ class _IsthmusAppState extends State<IsthmusApp> with WindowListener {
       home: AppScope(
         store: _store,
         prefs: _prefs,
+        updates: _updates,
         page: _page,
         go: _go,
         child: FileDropZone(

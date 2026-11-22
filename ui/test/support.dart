@@ -8,6 +8,7 @@ import 'package:isthmus_ui/src/app.dart';
 import 'package:isthmus_ui/src/ffi/models.dart';
 import 'package:isthmus_ui/src/shell/app_prefs.dart';
 import 'package:isthmus_ui/src/shell/app_scope.dart';
+import 'package:isthmus_ui/src/updates/update_controller.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:toastification/toastification.dart' show toastification;
 
@@ -28,6 +29,7 @@ Future<void> pumpApp(
   AppPage page = AppPage.overview,
   Size size = const Size(980, 680),
   Locale locale = const Locale('en'),
+  UpdateController? updates,
 }) async {
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1;
@@ -45,6 +47,7 @@ Future<void> pumpApp(
         prefs: prefs,
         initialPage: page,
         pollInterval: null,
+        updates: updates,
       ),
     ),
   );
