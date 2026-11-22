@@ -54,6 +54,9 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  # The real app on a real Windows runner in CI (integration_test/).
+  integration_test:
+    sdk: flutter
   # The recommended lint set, activated in analysis_options.yaml.
   flutter_lints: ^6.0.0
 

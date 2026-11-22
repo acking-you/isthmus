@@ -77,6 +77,25 @@ jobs:
           if ($held -notmatch 'Isthmus keeps this computer awake') { throw "powercfg does not list the request" }
           if ($after -match 'Isthmus keeps this computer awake') { throw "the request outlived its process" }
 
+  # The real Windows app on a real Windows desktop: what widget tests on
+  # Linux cannot see (the window, the tray, Flutter's frames). The fake API
+  # stands in for the library, so no Rust build is needed.
+  windows-app:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - name: The window comes back from the tray
+        run: flutter test integration_test/tray_test.dart -d windows
+
   app:
     runs-on: ubuntu-latest
     defaults:
@@ -95,7 +114,7 @@ jobs:
           flutter gen-l10n
           test "$(tr -d '[:space:]' < l10n_untranslated.json)" = "{}"
       - name: Format
-        run: dart format --output=none --set-exit-if-changed lib test tool
+        run: dart format --output=none --set-exit-if-changed lib test tool integration_test
       - name: Analyze
         run: flutter analyze --no-fatal-infos
       - name: Icons come from AppIcons

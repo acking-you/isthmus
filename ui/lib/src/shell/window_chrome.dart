@@ -17,6 +17,20 @@ bool get isFramelessDesktop =>
     (defaultTargetPlatform == TargetPlatform.macOS ||
         defaultTargetPlatform == TargetPlatform.windows);
 
+/// The window as the app opens it, shared with the Windows integration
+/// test so it runs the same window.
+WindowOptions get isthmusWindowOptions => WindowOptions(
+  size: const Size(980, 680),
+  minimumSize: const Size(760, 560),
+  center: true,
+  backgroundColor: Colors.transparent,
+  title: 'Isthmus',
+  titleBarStyle: isFramelessDesktop
+      ? TitleBarStyle.hidden
+      : TitleBarStyle.normal,
+  windowButtonVisibility: true,
+);
+
 /// Whether the app draws the window's caption buttons: Windows.
 bool get hasCaptionButtons =>
     !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
