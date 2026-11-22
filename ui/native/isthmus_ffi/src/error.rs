@@ -93,14 +93,14 @@ impl CtlError {
     pub fn from_link(error: LinkError) -> Self {
         let code = link_code(&error);
         tracing::warn!(?code, error = %chain(&error), "a file sharing operation failed");
-        Self::new(code, error.to_string())
+        Self::new(code, sentence(code, &error))
     }
 
     /// A keep-awake failure, with the code [`awake_code`] gives it.
     pub fn from_awake(error: AwakeError) -> Self {
         let code = awake_code(&error);
         tracing::warn!(?code, error = %chain(&error), "a keep-awake operation failed");
-        Self::new(code, error.to_string())
+        Self::new(code, sentence(code, &error))
     }
 }
 
@@ -166,6 +166,17 @@ pub fn service_code(error: &ServiceError) -> ErrorCode {
         ServiceError::NotRunning => ErrorCode::NotRunning,
         ServiceError::Unsupported { .. } => ErrorCode::Unsupported,
         ServiceError::PermissionMissing { .. } => ErrorCode::PermissionMissing,
+    }
+}
+
+/// The sentence a failure shows: for a file that could not be read or
+/// written, every cause down to the system's own words and the path, which
+/// is what someone fixing it needs and what nobody can see in a log on a PC;
+/// otherwise the failure's own sentence.
+fn sentence(code: ErrorCode, error: &dyn std::error::Error) -> String {
+    match code {
+        ErrorCode::Io => chain(error),
+        _ => error.to_string(),
     }
 }
 
@@ -300,10 +311,32 @@ mod tests {
         ];
         for (error, code) in cases {
             let text = error.to_string();
+            let full = chain(&error);
             let ctl = CtlError::from_link(error);
             assert_eq!(ctl.code(), code, "{text}");
-            assert_eq!(ctl.to_string(), text);
+            // A file's failure shows its causes, the rest their sentence.
+            let shown = if code == ErrorCode::Io { full } else { text };
+            assert_eq!(ctl.to_string(), shown);
         }
+    }
+
+    /// A state file that cannot be written says which file and why, down to
+    /// the system's words: on a PC nobody reads the log.
+    #[test]
+    fn a_file_failure_shows_the_path_and_the_system_error() {
+        let error = LinkError::WriteState {
+            source: isthmus_core::Error::Write {
+                path: PathBuf::from("/data/link-identity.json"),
+                source: io_error(),
+            },
+        };
+        let shown = CtlError::from_link(error).to_string();
+        assert!(
+            shown.starts_with("could not save the file sharing state: "),
+            "{shown}"
+        );
+        assert!(shown.contains("link-identity.json"), "{shown}");
+        assert!(shown.ends_with("denied"), "{shown}");
     }
 
     /// The log gets the whole chain, so a developer sees why a file could

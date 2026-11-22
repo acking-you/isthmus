@@ -3,6 +3,8 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+- On Windows, file sharing starts and keep-awake can be switched on. In 0.1.0 every state file failed to save there just after it was written (the folder was opened as a file to flush it, which Windows refuses), so file sharing stopped at its first file and said "could not save the file sharing state".
+- A file that cannot be read or written now says which file and why, down to the system's own words, wherever the app shows the failure.
 
 ## [0.1.0] - 2026-11-22
 - Keeping the computer awake with the screen off: one switch, in Settings and in the menu bar or the notification area, stops the computer sleeping on its own while the display still turns off on its schedule, so downloads, builds, remote sessions and file sharing keep running. It is the system's own idle-sleep request (`caffeinate -i` on a Mac, a power request on Windows), named so `pmset -g assertions` and `powercfg /requests` say who holds it, released when Isthmus quits, and remembered in `awake.json`.

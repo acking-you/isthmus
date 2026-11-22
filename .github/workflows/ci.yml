@@ -1,9 +1,9 @@
 name: CI
 
 # The checks AGENTS.md lists under Verification, on every push to main and
-# every pull request: the Rust workspace on macOS (the platform code is
-# macOS-only), the Windows build linted from Linux (every crate is pure
-# Rust), and the Flutter app.
+# every pull request: the Rust workspace on macOS, the Windows build linted
+# from Linux (every crate is pure Rust) and its tests run on Windows itself,
+# where file and power APIs differ, and the Flutter app.
 
 on:
   push:
@@ -49,6 +49,33 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Clippy for Windows
         run: make check-windows
+
+  # Lint from Linux catches what does not compile; this catches what behaves
+  # differently: 0.1.0's state files could not be written on Windows, and
+  # every test that writes one would have said so.
+  windows-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
+        run: rustup toolchain install $env:RUST_TOOLCHAIN --profile minimal
+      - uses: Swatinem/rust-cache@v2
+      - name: Test on Windows
+        run: cargo test --workspace --all-features
+      # The one thing the tests never do is hold the real power request; a
+      # CI runner may. Windows must list it under Isthmus's reason, and drop
+      # it when the process ends.
+      - name: The keep-awake request reaches Windows
+        run: |
+          cargo build -q -p isthmus-awake --example hold
+          $hold = Start-Process target\debug\examples\hold.exe -ArgumentList '15' -PassThru -NoNewWindow
+          Start-Sleep -Seconds 5
+          $held = powercfg /requests | Out-String
+          $held
+          Wait-Process -Id $hold.Id
+          $after = powercfg /requests | Out-String
+          if ($held -notmatch 'Isthmus keeps this computer awake') { throw "powercfg does not list the request" }
+          if ($after -match 'Isthmus keeps this computer awake') { throw "the request outlived its process" }
 
   app:
     runs-on: ubuntu-latest

@@ -155,9 +155,10 @@ Run what your change touches and say what you could not run.
   tap only with Accessibility granted to the process that runs it; unit
   tests cannot reach it. Say which of it you could not exercise.
 - Windows: `make check-windows` lints every crate and its tests for
-  `x86_64-pc-windows-msvc` from any host. The Windows runner, the
-  Windows platform code and the app on Windows build and run only on a PC;
-  say so when a change touches them.
+  `x86_64-pc-windows-msvc` from any host, and CI's `windows-test` runs the
+  workspace's tests on a Windows runner, where file and power APIs behave
+  differently from a Mac's. The Windows runner and the app on Windows run
+  only on a PC; say so when a change touches them.
 - File sharing between two machines needs Local Network access: a process
   started from a sandboxed tool or an agent's shell may get `No route to
   host` for every LAN packet. The loopback tests cover the protocol; try

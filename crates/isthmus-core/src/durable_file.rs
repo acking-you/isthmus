@@ -124,12 +124,23 @@ fn set_state_file_mode(_: &File) -> std::io::Result<()> {
 
 /// Fsyncs the directory holding `path`. A bare file name's parent is the
 /// empty path, which means the current directory.
+#[cfg(unix)]
 fn sync_parent_directory(path: &Path) -> std::io::Result<()> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     File::open(parent)?.sync_all()
+}
+
+/// Nothing to do: Windows cannot open a directory as a file (that takes
+/// `FILE_FLAG_BACKUP_SEMANTICS`, and flushing it write access the user may
+/// not have), and NTFS journals the rename's metadata itself. Opening it
+/// anyway failed every state-file write after the file was already in
+/// place, which kept file sharing from starting on Windows.
+#[cfg(not(unix))]
+fn sync_parent_directory(_path: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 #[cfg(test)]
